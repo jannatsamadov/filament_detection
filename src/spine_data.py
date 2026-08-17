@@ -206,3 +206,158 @@ class SpinePatchDataset(Dataset):
 
 def collate(batch):
     return {k: torch.stack([b[k] for b in batch]) for k in batch[0]}
+
+
+# ---------------------------------------------------------------------------
+CONSENSUS = ROOT / "consensus"
+PHYSICS = ROOT / "physics"
+PHYS_CHANNELS = ("coherence", "sin2t", "cos2t", "sinlat", "plagedist")
+
+
+class ConsensusPatchDataset(Dataset):
+    """One sample per photograph, targets graded by how many annotators agreed.
+
+    Two changes from SpinePatchDataset, both answering measurements:
+
+    * **Targets are vote fractions, not binary.** Treating each annotator's set
+      as its own sample showed a disputed filament to the model once as
+      foreground and twice as background; it sided with the majority and now
+      recovers 71% of filaments two experts agree on but only 29% of those a
+      single expert marked. A target of 0.33 says "one of three saw this"
+      instead of contradicting itself, and a threshold on the output then means
+      how much expert agreement to require.
+
+    * **Physical input channels.** Fibril coherence and orientation (relative to
+      the local heliographic east-west), latitude, and distance to plage. The
+      image-only model learns "dark and elongated", and 84% of its false
+      positives are dark structures no annotator marked.
+
+    Augmentation is restricted to transforms that preserve solar geometry --
+    the two mirrors and a half turn. Once latitude is an input channel the
+    problem is no longer rotationally symmetric: a quarter-turned Sun would have
+    latitude running across the image, which is not a Sun at all. The channels
+    that change sign under a mirror are corrected analytically.
+    """
+
+    def __init__(self, files, patch=512, augment=True, on_filament_prob=0.75,
+                 split="train", patches_per_image=4, cache_size=6,
+                 use_physics=True):
+        self.files = list(files)
+        self.patch = patch
+        self.augment = augment
+        self.on_filament_prob = on_filament_prob
+        self.dir = PRE / split
+        self.split = split
+        self.patches_per_image = patches_per_image
+        self.use_physics = use_physics
+        self._cache = collections.OrderedDict()
+        self._cache_size = cache_size
+
+    def __len__(self):
+        return len(self.files) * self.patches_per_image
+
+    @property
+    def in_channels(self):
+        return 1 + (len(PHYS_CHANNELS) if self.use_physics else 0)
+
+    def _frame(self, stem):
+        hit = self._cache.get(stem)
+        if hit is not None:
+            self._cache.move_to_end(stem)
+            return hit
+
+        img = np.asarray(Image.open(self.dir / f"{stem}.png"),
+                         dtype=np.float32) / SCALE + OFFSET
+        planes = [img]
+        if self.use_physics:
+            for k in PHYS_CHANNELS:
+                planes.append(np.asarray(Image.open(PHYSICS / self.split / stem / f"{k}.png"),
+                                         dtype=np.float32) / 255.0)
+        x = np.stack(planes)
+
+        d = CONSENSUS / stem
+        mask = np.asarray(Image.open(d / "mask_vote.png"), dtype=np.float32) / 255.0
+        spine = np.asarray(Image.open(d / "spine_vote.png"), dtype=np.float32) / 255.0
+        radius = np.asarray(Image.open(d / "radius.png"), dtype=np.float32)
+
+        item = (x, mask, spine, radius, _disk_mask())
+        self._cache[stem] = item
+        if len(self._cache) > self._cache_size:
+            self._cache.popitem(last=False)
+        return item
+
+    def _pick_origin(self, mask, valid):
+        p = self.patch
+        if random.random() < self.on_filament_prob and (mask > 0.2).any():
+            ys, xs = np.nonzero(mask > 0.2)
+            k = random.randrange(len(xs))
+            cx, cy = int(xs[k]), int(ys[k])
+        else:
+            ys, xs = np.nonzero(valid[::16, ::16])
+            k = random.randrange(len(xs))
+            cx, cy = int(xs[k]) * 16, int(ys[k]) * 16
+        j = p // 4
+        cx += random.randint(-j, j); cy += random.randint(-j, j)
+        return (int(np.clip(cx - p // 2, 0, FULL - p)),
+                int(np.clip(cy - p // 2, 0, FULL - p)))
+
+    def __getitem__(self, index):
+        stem = self.files[index % len(self.files)]
+        x, mask, spine, radius, valid = self._frame(stem)
+        p = self.patch
+        x0, y0 = self._pick_origin(mask, valid)
+        sl = (slice(y0, y0 + p), slice(x0, x0 + p))
+
+        xi = x[:, sl[0], sl[1]].copy()
+        ma = mask[sl].copy()
+        sp = spine[sl].copy()
+        ra = radius[sl].copy()
+        va = valid[sl].astype(np.float32)
+
+        if self.augment:
+            flip_h = random.random() < 0.5
+            flip_v = random.random() < 0.5
+            if flip_h:
+                xi = xi[:, :, ::-1]; ma = ma[:, ::-1]; sp = sp[:, ::-1]
+                ra = ra[:, ::-1]; va = va[:, ::-1]
+            if flip_v:
+                xi = xi[:, ::-1]; ma = ma[::-1]; sp = sp[::-1]
+                ra = ra[::-1]; va = va[::-1]
+            xi = np.ascontiguousarray(xi); ma = np.ascontiguousarray(ma)
+            sp = np.ascontiguousarray(sp); ra = np.ascontiguousarray(ra)
+            va = np.ascontiguousarray(va)
+
+            if self.use_physics:
+                i_sin2t = 1 + PHYS_CHANNELS.index("sin2t")
+                i_sinlat = 1 + PHYS_CHANNELS.index("sinlat")
+                # both channels are stored as 0.5*(value+1); a sign flip is 1-v.
+                # A mirror reverses the sense of the ridge-to-east-west angle, so
+                # sin2t changes sign under either mirror but not under both.
+                if flip_h != flip_v:
+                    xi[i_sin2t] = 1.0 - xi[i_sin2t]
+                # latitude changes sign only under the north-south mirror
+                if flip_v:
+                    xi[i_sinlat] = 1.0 - xi[i_sinlat]
+
+            if random.random() < 0.3:
+                xi[0] = xi[0] * random.uniform(0.97, 1.03) + random.uniform(-0.02, 0.02)
+
+        return {
+            "image": torch.from_numpy(xi),
+            "mask": torch.from_numpy(ma)[None],
+            "spine": torch.from_numpy(sp)[None],
+            "radius": torch.from_numpy(ra)[None],
+            "valid": torch.from_numpy(va)[None],
+        }
+
+
+def photograph_split(val_frac=0.2, seed=0):
+    """Train/val split over photographs, matching make_split's val set exactly."""
+    _, fname = load_annotations()
+    files = sorted({Path(v).stem for v in fname.values()})
+    rng = random.Random(seed)
+    order = sorted({v for v in fname.values()})
+    rng.shuffle(order)
+    n_val = int(round(len(order) * val_frac))
+    val_files = {Path(f).stem for f in order[:n_val]}
+    return sorted(set(files) - val_files), sorted(val_files)

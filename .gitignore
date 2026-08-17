@@ -5,6 +5,8 @@ MAGFiLO_1.0_Kaggle_2026/
 # Derived data and weights -- regenerate with src/preprocess.py and src/spine_train.py
 preprocessed/
 targets/
+physics/
+consensus/
 checkpoints/
 *.pt
 
@@ -20,7 +22,7 @@ __pycache__/
 trainlog_*.csv
 valog_*.json
 label_contrast.json
-submission.csv
+submission*.csv
 
 # Personal working notes, not repository content
 izah.md

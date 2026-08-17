@@ -24,11 +24,12 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 os.environ.setdefault("TORCH_HOME", str(ROOT / ".torchhub"))
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(ROOT.parent))          # shared: gpu_lock.py, gpu_guard.py
 from spine_data import DISK_CX, DISK_CY, DISK_R, FULL, OFFSET, SCALE   # noqa: E402
 from spine_model import build_spine_model                              # noqa: E402
 from spine_infer import assemble                                       # noqa: E402
 from spine_train import predict_frame                                  # noqa: E402
-from thermal import Governor                                           # noqa: E402
+from gpu_guard import Governor                                          # noqa: E402
 
 TEST = ROOT / "preprocessed" / "test"
 

@@ -36,15 +36,22 @@ def _conv_block(cin, cout):
 class SpineUNet(nn.Module):
     """Encoder-decoder producing (semantic logit, spine logit, radius)."""
 
-    def __init__(self, encoder="resnet34", pretrained=True, decoder_width=(256, 128, 64, 32, 16)):
+    def __init__(self, encoder="resnet34", pretrained=True, in_channels=1,
+                 decoder_width=(256, 128, 64, 32, 16)):
         super().__init__()
+        self.in_channels = in_channels
         fn = {"resnet18": resnet18, "resnet34": resnet34}[encoder]
         net = fn(weights="DEFAULT" if pretrained else None)
 
-        # grey input: collapse the pretrained RGB filters into one channel
+        # Channel 0 is the H-alpha image and inherits the pretrained RGB filters
+        # collapsed into one channel. Any extra physical channels start at zero,
+        # so the model begins exactly where the image-only model did and has to
+        # earn any use it makes of them.
         w = net.conv1.weight.data.sum(dim=1, keepdim=True)
-        conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
-        conv1.weight.data = w
+        conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        with torch.no_grad():
+            conv1.weight.zero_()
+            conv1.weight[:, :1] = w
         net.conv1 = conv1
 
         self.stem = nn.Sequential(net.conv1, net.bn1, net.relu)   # /2,  64
@@ -92,8 +99,8 @@ class SpineUNet(nn.Module):
         }
 
 
-def build_spine_model(encoder="resnet34", pretrained=True):
-    return SpineUNet(encoder=encoder, pretrained=pretrained)
+def build_spine_model(encoder="resnet34", pretrained=True, in_channels=1):
+    return SpineUNet(encoder=encoder, pretrained=pretrained, in_channels=in_channels)
 
 
 class SpineLoss(nn.Module):
