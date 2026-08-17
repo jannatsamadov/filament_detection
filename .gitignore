@@ -1,0 +1,28 @@
+# Competition data (redistributable only from Kaggle)
+MAGFiLO_1.0_Kaggle_2026/
+*.zip
+
+# Derived data and weights -- regenerate with src/preprocess.py and src/spine_train.py
+preprocessed/
+targets/
+checkpoints/
+*.pt
+
+# Environment
+.venv/
+.torchhub/
+.tmp/
+__pycache__/
+*.pyc
+
+# Run artefacts
+*.log
+trainlog_*.csv
+valog_*.json
+label_contrast.json
+submission.csv
+
+# Personal working notes, not repository content
+izah.md
+WALKTHROUGH.md
+general.md
