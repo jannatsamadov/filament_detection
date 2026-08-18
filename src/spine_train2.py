@@ -125,12 +125,23 @@ def predict_frame(model, stack, device, patch=512, stride=384, tta=False):
 
 
 def validate(model, val_ids, by_id, fname, device, limit=25, governor=None,
-             spine_thresh=0.5, sem_thresh=0.5, min_spine_px=100, use_physics=True,
-             tta=False):
+             spine_threshs=(0.5, 0.7, 0.85, 0.95), sem_thresh=0.5,
+             min_spine_px=150, use_physics=True, tta=False):
+    """Score at several spine thresholds and report the best.
+
+    A single fixed threshold is the wrong criterion here, and it cost a
+    misreading: at 0.5 this model looked well behind the image-only one at the
+    same epoch (0.135 against 0.197), but sweeping showed it reaching 0.194 at
+    0.70 and still climbing. The threshold that suits a model shifts as it
+    trains, so selecting the best checkpoint on a fixed one selects on noise.
+    The maps are predicted once and every threshold is scored on them, so the
+    sweep is nearly free.
+    """
     model.eval()
     yy, xx = np.mgrid[0:FULL, 0:FULL]
     ondisk = ((xx - DISK_CX) ** 2 + (yy - DISK_CY) ** 2) <= (DISK_R * 0.995) ** 2
-    cache, results = {}, []
+
+    cache = {}
     for iid in val_ids[:limit]:
         stem = Path(fname[iid]).stem
         if stem not in cache:
@@ -139,12 +150,21 @@ def validate(model, val_ids, by_id, fname, device, limit=25, governor=None,
             cache[stem] = (sem * ondisk, spn * ondisk, rad)
             if governor is not None:
                 governor._regulate()
-        sem, spn, rad = cache[stem]
-        preds = assemble(spn, rad, sem, spine_thresh=spine_thresh,
-                         sem_thresh=sem_thresh, min_spine_px=min_spine_px)
-        results.append(pq_from_masks(gt_masks_full(by_id[iid]), preds))
+
+    best = None
+    for st in spine_threshs:
+        results = []
+        for iid in val_ids[:limit]:
+            sem, spn, rad = cache[Path(fname[iid]).stem]
+            preds = assemble(spn, rad, sem, spine_thresh=st, sem_thresh=sem_thresh,
+                             min_spine_px=min_spine_px)
+            results.append(pq_from_masks(gt_masks_full(by_id[iid]), preds))
+        ds = aggregate(results)
+        ds["spine_thresh"] = st
+        if best is None or ds["PQ"] > best[0]["PQ"]:
+            best = (ds, aggregate(results, mode="image"))
     model.train()
-    return aggregate(results), aggregate(results, mode="image")
+    return best
 
 
 def main():
@@ -160,9 +180,14 @@ def main():
     ap.add_argument("--target-util", type=int, default=55)
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--no-physics", action="store_true")
+    ap.add_argument("--consensus-dir", default=None,
+                    help="targets directory; pass consensus_prop to include the "
+                         "filaments restored from neighbouring days")
     ap.add_argument("--tag", default="spine_v2")
     ap.add_argument("--resume", default="")
     ap.add_argument("--start-below", type=int, default=68)
+    ap.add_argument("--val-thresholds", type=float, nargs="+",
+                    default=[0.5, 0.7, 0.85, 0.95])
     ap.add_argument("--wait-for-gpu", action="store_true",
                     help="queue behind whoever holds the shared GPU lock")
     args = ap.parse_args()
@@ -186,7 +211,8 @@ def main():
 
     ds = ConsensusPatchDataset(train_files, patch=args.patch, augment=True,
                                patches_per_image=args.patches_per_image,
-                               use_physics=use_physics)
+                               use_physics=use_physics,
+                               consensus_dir=args.consensus_dir)
     dl = torch.utils.data.DataLoader(ds, batch_size=args.batch, shuffle=True,
                                      num_workers=args.workers, collate_fn=collate,
                                      pin_memory=True, drop_last=True,
@@ -267,8 +293,10 @@ def main():
               tv = time.time()
               dsm, imm = validate(model, val_ids, by_id, fname, device,
                                   limit=args.val_limit, governor=gov,
+                                  spine_threshs=args.val_thresholds,
                                   use_physics=use_physics)
-              print(f"  VAL ({args.val_limit} sets, {time.time()-tv:.0f}s): "
+              print(f"  VAL ({args.val_limit} sets, {time.time()-tv:.0f}s, best of "
+                    f"{len(args.val_thresholds)} thresholds @ {dsm['spine_thresh']:.2f}): "
                     f"PQ={dsm['PQ']:.4f} SQ={dsm['SQ']:.4f} RQ={dsm['RQ']:.4f} "
                     f"TP={dsm['TP']} FP={dsm['FP']} FN={dsm['FN']}  "
                     f"[image-only model reached 0.333 val / 0.28 official]", flush=True)

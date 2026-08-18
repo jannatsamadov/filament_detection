@@ -241,7 +241,7 @@ class ConsensusPatchDataset(Dataset):
 
     def __init__(self, files, patch=512, augment=True, on_filament_prob=0.75,
                  split="train", patches_per_image=4, cache_size=6,
-                 use_physics=True):
+                 use_physics=True, consensus_dir=None):
         self.files = list(files)
         self.patch = patch
         self.augment = augment
@@ -250,6 +250,9 @@ class ConsensusPatchDataset(Dataset):
         self.split = split
         self.patches_per_image = patches_per_image
         self.use_physics = use_physics
+        # consensus/ holds the annotators' votes alone; consensus_prop/ adds the
+        # filaments restored from a neighbouring day's labels at a reduced vote.
+        self.consensus_dir = Path(consensus_dir) if consensus_dir else CONSENSUS
         self._cache = collections.OrderedDict()
         self._cache_size = cache_size
 
@@ -275,7 +278,7 @@ class ConsensusPatchDataset(Dataset):
                                          dtype=np.float32) / 255.0)
         x = np.stack(planes)
 
-        d = CONSENSUS / stem
+        d = self.consensus_dir / stem
         mask = np.asarray(Image.open(d / "mask_vote.png"), dtype=np.float32) / 255.0
         spine = np.asarray(Image.open(d / "spine_vote.png"), dtype=np.float32) / 255.0
         radius = np.asarray(Image.open(d / "radius.png"), dtype=np.float32)

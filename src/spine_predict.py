@@ -26,10 +26,11 @@ os.environ.setdefault("TORCH_HOME", str(ROOT / ".torchhub"))
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(ROOT.parent))          # shared: gpu_lock.py, gpu_guard.py
 from spine_data import DISK_CX, DISK_CY, DISK_R, FULL, OFFSET, SCALE   # noqa: E402
+from spine_train2 import load_stack, predict_frame as predict_frame_v2  # noqa: E402
 from spine_model import build_spine_model                              # noqa: E402
 from spine_infer import assemble                                       # noqa: E402
-from spine_train import predict_frame                                  # noqa: E402
 from gpu_guard import Governor                                          # noqa: E402
+from gpu_lock import GpuLock                                            # noqa: E402
 
 TEST = ROOT / "preprocessed" / "test"
 
@@ -63,6 +64,8 @@ def main():
     ap.add_argument("--min-area", type=int, default=120)
     ap.add_argument("--min-spine-px", type=int, default=None,
                     help="default: the tuned value from spine_calibrate.py")
+    ap.add_argument("--tta", action="store_true",
+                    help="average over the four geometry-preserving mirrors")
     ap.add_argument("--result-json", default=str(ROOT / "result_spine_unet_r34.json"))
     args = ap.parse_args()
 
@@ -85,23 +88,29 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ck = torch.load(args.ckpt, map_location=device, weights_only=False)
+    # The channel count is whatever the checkpoint was trained with; reading it
+    # from the first convolution avoids having to remember which run is which.
+    in_ch = int(ck["model"]["stem.0.weight"].shape[1])
     model = build_spine_model(ck["args"].get("encoder", "resnet34"),
-                              pretrained=False).to(device)
+                              pretrained=False, in_channels=in_ch).to(device)
     model.load_state_dict(ck["model"]); model.eval()
-    print(f"loaded {args.ckpt} (epoch {ck['epoch']}, val PQ {ck.get('PQ', float('nan')):.4f})")
+    print(f"loaded {args.ckpt} (epoch {ck['epoch']}, val PQ "
+          f"{ck.get('PQ', float('nan')):.4f}, {in_ch} input channels)")
 
     yy, xx = np.mgrid[0:FULL, 0:FULL]
     ondisk = ((xx - DISK_CX) ** 2 + (yy - DISK_CY) ** 2) <= (DISK_R * 0.995) ** 2
 
+    use_physics = in_ch > 1
     files = sorted(TEST.glob("*.png"))
     print(f"{len(files)} test images")
     gov = Governor(target_util=55, check_every=2)
 
+    lock = GpuLock("filament_detection", "predict", wait=True).acquire()
     rows, per_image = [], []
     for k, f in enumerate(files, 1):
-        img = np.asarray(Image.open(f), dtype=np.float32) / SCALE + OFFSET
+        stack = load_stack(f.stem, "test", use_physics)
         with gov.step():
-            sem, spn, rad = predict_frame(model, img, device)
+            sem, spn, rad = predict_frame_v2(model, stack, device, tta=args.tta)
         sem *= ondisk; spn *= ondisk
         masks = assemble(spn, rad, sem, spine_thresh=spine_thresh,
                          sem_thresh=args.sem_thresh, min_area=args.min_area,
@@ -112,6 +121,7 @@ def main():
             rows.append((f"{f.stem}_{j}", encode_rle(m)))
         per_image.append(len(masks))
         if k % 25 == 0:
+            lock.progress(f"{k}/{len(files)} frames")
             print(f"  {k}/{len(files)}  mean {np.mean(per_image):.1f} filaments/image",
                   flush=True)
 
@@ -121,6 +131,7 @@ def main():
         for fid, rle in rows:
             fh.write(f"{fid},{rle}\n")
 
+    lock.release()
     pi = np.array(per_image)
     print(f"\nwrote {out}  ({len(rows)} rows over {len(files)} images)")
     print(f"filaments per image: mean {pi.mean():.2f} median {np.median(pi):.0f} "

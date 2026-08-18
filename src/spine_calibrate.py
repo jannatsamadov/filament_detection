@@ -30,7 +30,7 @@ sys.path.insert(0, str(HERE))
 from spine_data import load_annotations, make_split          # noqa: E402
 from spine_model import build_spine_model                    # noqa: E402
 from spine_infer import assemble                             # noqa: E402
-from spine_train import cached_maps                          # noqa: E402
+from spine_train2 import load_stack, predict_frame as predict_frame_v2  # noqa: E402
 from metrics import pq_from_masks, aggregate                 # noqa: E402
 from evaluate import gt_masks_full                           # noqa: E402
 
@@ -64,6 +64,7 @@ def main():
                     default=[0.3, 0.4, 0.5, 0.6, 0.7, 0.8])
     ap.add_argument("--min-spine-px", type=int, nargs="+", default=[12, 30, 60, 100])
     ap.add_argument("--sem-thresh", type=float, default=0.5)
+    ap.add_argument("--tta", action="store_true")
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -71,13 +72,23 @@ def main():
     _, val_ids, _ = make_split(fname)
 
     ck = torch.load(args.ckpt, map_location=device, weights_only=False)
+    in_ch = int(ck["model"]["stem.0.weight"].shape[1])
     model = build_spine_model(ck["args"].get("encoder", "resnet34"),
-                              pretrained=False).to(device)
+                              pretrained=False, in_channels=in_ch).to(device)
     model.load_state_dict(ck["model"]); model.eval()
     print(f"{args.ckpt} (epoch {ck['epoch']}, val PQ {ck.get('PQ', float('nan')):.4f})")
 
     print(f"predicting {args.limit} frames once...", flush=True)
-    maps = cached_maps(model, val_ids, fname, device, args.limit)
+    from spine_data import DISK_CX, DISK_CY, DISK_R, FULL
+    from pathlib import Path as _P
+    yy, xx = np.mgrid[0:FULL, 0:FULL]
+    ondisk = ((xx - DISK_CX) ** 2 + (yy - DISK_CY) ** 2) <= (DISK_R * 0.995) ** 2
+    maps = {}
+    for iid in val_ids[:args.limit]:
+        stem = _P(fname[iid]).stem
+        stack = load_stack(stem, "train", in_ch > 1)
+        sem, spn, rad = predict_frame_v2(model, stack, device, tta=args.tta)
+        maps[iid] = (sem * ondisk, spn * ondisk, rad)
 
     rows = sweep(maps, by_id, args.spine_threshs, args.min_spine_px,
                  sem_thresh=args.sem_thresh)
