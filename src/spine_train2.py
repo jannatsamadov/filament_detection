@@ -180,6 +180,9 @@ def main():
     ap.add_argument("--target-util", type=int, default=55)
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--no-physics", action="store_true")
+    ap.add_argument("--init-from", default=None,
+                    help="encoder/decoder weights from src/pretrain.py, used in "
+                         "place of the ImageNet initialisation")
     ap.add_argument("--consensus-dir", default=None,
                     help="targets directory; pass consensus_prop to include the "
                          "filaments restored from neighbouring days")
@@ -219,6 +222,30 @@ def main():
                                      persistent_workers=args.workers > 0)
 
     model = build_spine_model(args.encoder, in_channels=ds.in_channels).to(device)
+    if args.init_from:
+        # The pretrained body was learned on one channel, the H-alpha image. Its
+        # first-layer filters go to channel 0 and the physical channels keep
+        # their zero start, exactly as with the ImageNet initialisation.
+        sd = torch.load(args.init_from, map_location=device, weights_only=False)
+        own = model.state_dict()
+        loaded, skipped = 0, 0
+        for k, v in sd.items():
+            if k not in own:
+                skipped += 1
+                continue
+            if own[k].shape == v.shape:
+                own[k] = v
+                loaded += 1
+            elif k == "stem.0.weight" and v.shape[1] == 1:
+                w = own[k].clone()
+                w[:, :1] = v
+                own[k] = w
+                loaded += 1
+            else:
+                skipped += 1
+        model.load_state_dict(own)
+        print(f"initialised from {Path(args.init_from).name}: "
+              f"{loaded} tensors loaded, {skipped} skipped")
     crit = SpineLoss().to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scaler = torch.amp.GradScaler("cuda")

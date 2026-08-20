@@ -39,6 +39,51 @@ cd D:\Projects\Competitions\filament_detection
 
 ---
 
+## 2b. HAZIRDA İŞLƏYƏN — v4 (2026-08-20)
+
+**GPU-da təlim gedir.** Bitəndə: kalibrləmə → hesabat → proqnoz → yoxlama → submit.
+
+```bash
+# bitəndən sonra
+./.venv/Scripts/python.exe src/spine_calibrate.py --ckpt checkpoints/spine_v4_best.pt     --tag spine_v4 --limit 25 --tta --spine-threshs 0.85 0.95     --min-spine-px 300 400 500 600 700
+./.venv/Scripts/python.exe src/spine_predict.py --ckpt checkpoints/spine_v4_best.pt     --spine-thresh <tapilan> --min-spine-px <tapilan> --tta --out submission_v4.csv
+./.venv/Scripts/python.exe src/verify_submission.py submission_v4.csv     --test-dir MAGFiLO_1.0_Kaggle_2026/test/test_images
+# submit ISTIFADECININ qerarıdır
+```
+
+**v4 nədir:** v2 ilə **eyni**, yalnız başlanğıc çəkilər fərqlidir — ImageNet yerinə
+**3772 etiketsiz GONG şəklində ön-təlim edilmiş** encoder.
+
+**Ön-təlim** (`src/pretrain.py`, `checkpoints/pretrain_r34_encoder.pt`):
+3772 şəkil (2010–2024, altı stansiyadan bərabər, `gong_unlabelled/`, hamısı eyni
+fotometrik boru xəttindən keçib). Tapşırıq: şəklin 50%-ini 48-px bloklarla ört,
+bərpa et. 20 epoxa, ~10 saat. Bərpa xətası 0.173 → 0.0349.
+
+**v4 nəticələri (hər 4 epoxada, 4 hədd süpürməsi ilə):**
+
+| Epoxa | 3 | 7 | 11 | 15 | 19 | 23 | 27 | **31** |
+|---|---|---|---|---|---|---|---|---|
+| PQ | 0.216 | 0.269 | 0.284 | 0.321 | 0.327 | 0.317 | 0.327 | **0.344** |
+| FP | 286 | 238 | 200 | 170 | 138 | 190 | 146 | 150 |
+| FN | 126 | 103 | 109 | 97 | 106 | 92 | 103 | **90** |
+
+**Ön-təlim işləyir.** Eyni protokolla v3 ilə müqayisə:
+
+| Epoxa | v3 (ImageNet) | **v4 (Günəş ön-təlimi)** |
+|---|---|---|
+| 7 | 0.241 | **0.269** |
+| 15 | 0.276 | **0.321** |
+| 19 | 0.293 | **0.327** |
+| 31 | — (v3 max 0.324) | **0.344** |
+
+v4 15-ci epoxada v3-ün 23-cü epoxasına çatır — **8 epoxa qabaqda**. Və **FN 90**,
+v2-nin yekun iş nöqtəsində 119 idi: recall problemi düzəlməyə başlayıb.
+
+Bu rəqəmlər hələ **TTA-sız və tam kalibrləməsizdir**; v2-də o iki addım
+0.31 → 0.355 vermişdi.
+
+⚠️ **v4-də zaman bərpası YOXDUR.** O, v3-də idi və uğursuz oldu (§6).
+
 ## 3. Nəticələr lövhəsi
 
 | # | Model | Validasiya | **Rəsmi** |
@@ -48,6 +93,7 @@ cd D:\Projects\Competitions\filament_detection
 | 3 | eyni, mülayim kalibrləmə | 0.3098 | **0.24** |
 | 4 | **+ fizika kanalları + konsensus + TTA** | 0.3553 | **0.29** ← ən yaxşı |
 | 5 | + zaman yayılması | 0.3593 | 0.28 ⚠️ sınıq, §6 |
+| 6 | **+ Günəş ön-təlimi (v4)** | 0.344 (e31, TTA-sız) | təlimdə, §2b |
 
 **İstinad nöqtələri:** insan konsensusu **0.348** · boru xəttinin tavanı **0.734**.
 
@@ -143,14 +189,20 @@ Vizual sübut: `figures/13_rotation_derotated.gif` — filamentlər hələ sür�
 həll olunub (444→69), amma qiyməti recall oldu: **filamentlərin yarısını itiririk**.
 Qazanc FP-ni geri qaytarmadan recall qaldırmaqdan gəlməlidir.
 
-**2. Etiketsiz GONG arxivində self-supervised ön-təlim.** Əsl məhdudiyyət
-**566 təlim şəklidir**; encoder hazırda **ImageNet** çəkiləri ilə başlayır, bu isə
-Günəş şəkilləri üçün zəif başlanğıcdır. Qaydalar xarici dataya icazə verir
-(inference-də yalnız `test/`). Strukturca fərqli addım, tənzimləmə deyil.
+**2. ✅ EDİLDİ — etiketsiz GONG arxivində ön-təlim.** 3772 şəkil endirildi və
+model onlarda ön-təlim edildi; nəticə §2b-dədir və müsbətdir. Uzatmaq olar
+(20 epoxadan çox), yaxud **yalnız encoder** yükləməyi sınamaq olar — hazırda
+decoder də yüklənir, o isə bərpa tapşırığına köklənib və v4 ilk epoxada v2-dən
+pis başladı (loss 3.57 vs 2.76).
 
-**3. Zaman yayılmasını düzəltmək.** Efemeridi `sunpy`-yə qarşı yoxla, qalıq
-sürüşməni 0.5°-dən aşağı sal, sonra yenidən sına. İdeya sınanmamış qalır və
-material var: eyni gün cütlərində filamentlərin **29%-i** yalnız birində qeydlidir.
+**3. Zaman yayılmasını düzəltmək — YENİ dizayn (iştirakçının təklifi).**
+Köhnə üsul dünənki filamentin **surətini** çəkirdi; düzgün üsul zamanı yalnız
+**"bura bax"** siqnalı kimi işlətməkdir, etiketi isə **bugünkü şəkildən** almaq.
+
+⚠️ **Təlimdən ƏVVƏL yoxlama məcburidir** (bu dəfə edilməyib, ona görə 54% zibil
+etiket fərq edilmədən təlimə getdi): yeni annotasiya faylı yaradılsın və
+**neçə dəqiq filamentin şübhəli/qeydsiz filamentin üzərinə düşdüyü** sayılsın.
+Rəqəm məntiqsizdirsə, təlim başlamamalıdır.
 
 **4. Ansambl / daha uzun təlim.** Ən proqnozlaşdırıla bilən, amma ən az fərqləndirici.
 
