@@ -21,6 +21,11 @@
 
 **Əvvəl yoxlanmalı:** test dəstində 3.5 gün içində neçə cüt var. Sıfırdırsa, ideya təlim üçün faydalı ola bilər (regularizasiya kimi), amma inference-də işləməz.
 
+
+add
+Sizin təklifin adı var və işləyir — bu, self-training / EM sxemidir. Model öz təxminini etiketə çevirir, təlim davam edir, etiket yenilənir.
+
+
 ---
 
 ## 2. Stansiya adını modelə giriş kimi vermək
