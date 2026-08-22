@@ -155,6 +155,7 @@ Model isə qaranlıqlıqdan **daha yaxşı** filament detektorudur — konsensus
 | Efemeridi düzəltmək | xəta artıq **0.9°** (11–14 px) | **düzəldiləcək bir şey yoxdur** |
 | Fırlanma qanununu annotasiyalardan ölçmək | enlik dəyişməsi 3.3–3.6° | **filamentləri tanıya bilmirik**, ölçmə mümkün deyil |
 | Səs promote etmək (yalnız annotasiyalarla) | 2.5× təsadüfdən yuxarı, amma cəmi 11 etiket | **siqnal var, həcm yoxdur** |
+| Instance etibar balı (əl ilə düzəldilmiş əlamətlər) | 0.3367 → 0.3415, küy 0.03 | **sıfır qazanc** |
 | Günəş şəkillərində ön-təlim (v4) | validasiya 0.355 → 0.379 | rəsmi **0.29 → 0.27** |
 
 **Ən vacib dərs:** son üç submitdə **validasiya qalxdı, rəsmi bal düşdü**. 25 şəkillik validasiya artıq etibarsızdır və ona görə optimallaşdırmaq zərərlidir.
@@ -173,7 +174,27 @@ böyük hissəsi bu idi.
 
 ## Sınanmamış, qeyd üçün
 
-- **YOLOv8-seg.** Mask R-CNN uğursuzluğuna əsaslanaraq kənara qoyulmuşdu. O əsas **yanlışdır**: YOLO-seg anchor-free işləyir, qutu-IoU uyğunlaşmasından asılı deyil. Liderlərdən birinin açıq notebook-u YOLOv8x-seg, 1792 px göstərir.
+- **YOLOv8-seg.** Mask R-CNN uğursuzluğuna əsaslanaraq kənara qoyulmuşdu. O əsas
+  **yanlışdır**: YOLO-seg anchor-free işləyir, qutu-IoU uyğunlaşmasından asılı
+  deyil. Liderlərdən birinin açıq notebook-u YOLOv8x-seg, 1792 px göstərir.
+
+  **2026-08-22:** "YOLO-nun üstünlüyü instance etibar balındadır, onu öz boru
+  xəttimizə ucuz yolla əlavə edə bilərik" fərziyyəsi **sınandı və rədd edildi**
+  (`src/check_instance_score.py`). Doqquz əlamət üzərində loqistik model,
+  validasiyanın yarısında öyrədilib o biri yarısında ölçüldü: 0.3367 → 0.3415,
+  yəni küy içində. Boş həddə çıxan **699 namizədin yalnız 39.5%-i realdır** və
+  bu əlamətlər onları ayıra bilmir. Deməli problem instance **seçimində** deyil,
+  namizədlərin özündədir — yəni təlimdə. YOLO-ya keçməyin ucuz əvəzi yoxdur.
+
+- **U-Net-in dərin qatına attention.** Filament uzun və nazikdir, uzaq kontekst
+  vacibdir. Tam transformer bu kartda mümkün deyil (2048 px-də 16384 token,
+  attention kvadratik) və 566 şəkil transformer üçün azdır. Amma ən dərin qatda
+  (64×64 = 4096 token) bir attention bloku ucuzdur. Sınanmayıb.
+
+- **Tam kadrla təlim.** Ölçüldü: 2048 px, batch 1, **4749 MiB** — 6 GB kartda
+  sığır. Kəsiklərlə təlimin gizli qüsuru var: model "filament burada bitir"
+  siqnalını süni kəsik kənarlarından öyrənir, testdə isə o kənarlar yoxdur.
+  Qiyməti: epoxa başına 2.7× hesablama (31 dəq → ~85 dəq).
 - **Validasiyanı düzəltmək.** 25 şəkil → ən azı 60. **Ölçüldü: fərq 0.03.** Bütün
   qərarlar bundan sonra 60 dəstlə verilir.
 - **Xirallik başlığı.** `category_id` istifadə edilmir: Left 2535, Right 2590,

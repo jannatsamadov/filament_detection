@@ -1,0 +1,15 @@
+707 photographs, 8199 annotations
+582 pairs within 3.5 days over 575 photographs
+  50/575  0 min, 3 min left
+  100/575  1 min, 4 min left
+  150/575  1 min, 4 min left
+  200/575  2 min, 3 min left
+  250/575  2 min, 3 min left
+  300/575  3 min, 2 min left
+  350/575  4 min, 2 min left
+  400/575  4 min, 2 min left
+  450/575  5 min, 1 min left
+  500/575  6 min, 1 min left
+  550/575  6 min, 0 min left
+2562 annotations confirmed by at least one other photograph
+
