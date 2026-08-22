@@ -89,8 +89,45 @@ ona görə "konturun **içinə** düşsün" tələbi həndəsənin verə bilməd
 Səbəb: üç annotatorlu 151 şəkildən 3.5 gün içində cəmi **19 cüt** çıxır.
 
 **Bunun əsas nəticəsi:** məhdudiyyət ideyada deyil, üç annotator şərtindədir.
-Model cavab versə, o şərt qalxır — **19 cüt yox, 582 cüt**. Ona görə modelli
-variant indi əsaslandırılmış addımdır, fərziyyə deyil.
+
+### 4b. Səsi günlər arasında saymaq — iştirakçının düzəlişi
+
+**Kim:** iştirakçı. **Vəziyyət: SINANDI VƏ İŞLƏYİR** (`src/check_crossday_votes.py`).
+
+İştirakçı göstərdi ki səsi bir şəklin daxilində saymaq səhvdir: eyni filamenti
+üç gündə üç fərqli müəllif işarələyə bilər, mənim kodum bunu üç dəfə "1/3" kimi
+görürdü. Qruplar (müəllif komandaları) yoxlandı: qrup daxilində 3.5 gün içində
+cəmi **32 cüt**, bütün şəkillər arasında **582 cüt** — və 550-si fərqli
+komandalardır, yəni müstəqil şahidlik.
+
+Bütün cütlərdə filamentlər fırlanma ilə bağlandı:
+
+| | Say |
+|---|---|
+| Proyeksiya | 10303 |
+| Annotasiyanın üstünə düşdü | 2867 (**27.8%**) |
+| Təsadüfi əyri (nəzarət) | 705 (**8.9%**) |
+| Nisbət | **3.1×** |
+
+- **888** filament: şəkildə bir neçə müəllif var, yalnız biri çəkib → **254-ü
+  (28.6%)** başqa şəkildə təsdiqlənir.
+- **2638** filament: şəkli yalnız bir nəfər işarələyib → **1066-sı (40.4%)**
+  başqa şəkildə təsdiqlənir.
+
+**Cəmi 1320 filament (datanın 16%-i)** "şübhəli"dən "təsdiqlənmiş"ə keçə bilər.
+Təsadüf payı çıxılsa ~900 real qalır. **Tətbiq ediləcək.**
+
+### 4c. Zəif işarələnmiş filamenti tapmaq balı qaldırırmı?
+
+**Vəziyyət: ÖLÇÜLDÜ** (`src/check_single_vote_value.py`, 60 validasiya dəsti).
+
+| İş nöqtəsi | Olduğu kimi | Tək-müəllif tapıntıları silinsə | Fərq |
+|---|---|---|---|
+| Sərt (0.90 / 700) | 0.3495 | 0.3311 | **−0.0185** |
+| Boş (0.85 / 300) | 0.3301 | 0.3041 | **−0.0260** |
+
+**Silmək zərər verir** → onları tapmaq dəyərlidir. Kalibrləmənin sərtliyi
+tək-müəllif filamentlərini deyil, **zibili** kəsir. İkisi fərqli şeydir.
 
 **Niyə perspektivlidir.** Alternativ meyarlar sınandı və uğursuz oldu:
 
@@ -122,6 +159,10 @@ Model isə qaranlıqlıqdan **daha yaxşı** filament detektorudur — konsensus
 
 **Ən vacib dərs:** son üç submitdə **validasiya qalxdı, rəsmi bal düşdü**. 25 şəkillik validasiya artıq etibarsızdır və ona görə optimallaşdırmaq zərərlidir.
 
+**2026-08-22-də ölçüldü:** eyni model, eyni iş nöqtəsi, yalnız validasiya ölçüsü
+fərqli — **25 dəst 0.3790, 60 dəst 0.3495**. Fərq **0.03**. v4-ün "qazancının"
+böyük hissəsi bu idi.
+
 | Model | Validasiya | Rəsmi | Fərq |
 |---|---|---|---|
 | v2 | 0.3553 | **0.29** | 0.065 |
@@ -133,6 +174,12 @@ Model isə qaranlıqlıqdan **daha yaxşı** filament detektorudur — konsensus
 ## Sınanmamış, qeyd üçün
 
 - **YOLOv8-seg.** Mask R-CNN uğursuzluğuna əsaslanaraq kənara qoyulmuşdu. O əsas **yanlışdır**: YOLO-seg anchor-free işləyir, qutu-IoU uyğunlaşmasından asılı deyil. Liderlərdən birinin açıq notebook-u YOLOv8x-seg, 1792 px göstərir.
-- **Validasiyanı düzəltmək.** 25 şəkil → bütün validasiya bölməsi. GPU vaxtı artır, amma qərarlar etibarlı olur. Bu, hazırda **ən ucuz və ən vacib** düzəlişdir.
+- **Validasiyanı düzəltmək.** 25 şəkil → ən azı 60. **Ölçüldü: fərq 0.03.** Bütün
+  qərarlar bundan sonra 60 dəstlə verilir.
+- **Xirallik başlığı.** `category_id` istifadə edilmir: Left 2535, Right 2590,
+  **Unidentifiable 3074**. Metrikə birbaşa təsir etmir (tək sinif), amma əlavə
+  nəzarət tapşırığı kimi əsas tapşırığı gücləndirə bilər. Üstəlik
+  "Unidentifiable" hazır **zəiflik göstəricisidir**. Ucuzdur: bir 4-sinifli
+  çıxış başlığı.
 - **Parlaqlıq eyniləşdirməsini çıxarmaq.** İştirakçının təklifi. Ölçülüb ki o addım kontrastı 0.667σ → 1.331σ qaldırır, amma ön-təlim də, fizika kanalları da onun üzərində qurulub — çıxarmaq hamısını yenidən qurmaq deməkdir.
 - **Barb-ları ayrıca başlıqla öyrətmək.** Filamentlərin 81.5%-də barb var, median sahənin 18%-i.

@@ -1,0 +1,10 @@
+{
+ "n_proj": 10303,
+ "n_hit": 2867,
+ "n_ctl": 7956,
+ "n_ctl_hit": 705,
+ "weak": 888,
+ "weak_supported": 254,
+ "single": 2638,
+ "single_supported": 1066
+}

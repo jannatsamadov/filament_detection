@@ -1,0 +1,27 @@
+707 photographs, 582 pairs within 3.5 days, 575 photographs involved
+  50/575 target frames, 140/663 linked
+  100/575 target frames, 431/1822 linked
+  150/575 target frames, 782/2941 linked
+  200/575 target frames, 1037/4036 linked
+  250/575 target frames, 1377/5354 linked
+  300/575 target frames, 1662/6480 linked
+  350/575 target frames, 2172/7932 linked
+  400/575 target frames, 2427/8819 linked
+  450/575 target frames, 2667/9485 linked
+  500/575 target frames, 2724/9791 linked
+  550/575 target frames, 2816/10111 linked
+
+10303 projections, 2867 landed on an annotation (27.8%)
+control: 705/7956 (8.9%) -> ratio 3.1x
+
+4711 filament groups; 733 of them span more than one annotation (2562 annotations)
+  group size: {1: 3978, 2: 286, 3: 164, 4: 122, 5: 70, 6: 47, 7: 18, 8: 9}
+
+filaments only one of several annotators drew: 888
+   of those, another photograph independently shows: 254 (28.6%)
+filaments two or more annotators drew: 3014
+
+filaments in photographs only one person annotated: 2638
+   of those, another photograph independently shows: 1066 (40.4%)   <- new evidence, unavailable to a within-photograph count
+
+wrote crossday_votes.json
