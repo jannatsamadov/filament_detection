@@ -1,0 +1,27 @@
+{
+ "photograph": "20180805232510Mh",
+ "n_annotators": 2,
+ "filaments": [
+  {
+   "id": 1,
+   "n_drew": 2,
+   "n_annotators": 2,
+   "authors": [
+    "010301",
+    "010302"
+   ],
+   "chirality": 2,
+   "cd_diff": [
+    "010201",
+    "010202",
+    "010203"
+   ],
+   "cd_same": 0,
+   "a": 5.0,
+   "b": 0.0,
+   "frozen": true,
+   "opening": 1.0,
+   "n_drew_eff": 5
+  }
+ ]
+}

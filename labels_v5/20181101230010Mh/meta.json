@@ -1,0 +1,42 @@
+{
+ "photograph": "20181101230010Mh",
+ "n_annotators": 2,
+ "filaments": [
+  {
+   "id": 1,
+   "n_drew": 2,
+   "n_annotators": 2,
+   "authors": [
+    "050101",
+    "050103"
+   ],
+   "chirality": 3,
+   "cd_diff": [],
+   "cd_same": 0,
+   "a": 5.0,
+   "b": 0.0,
+   "frozen": true,
+   "opening": 1.0,
+   "n_drew_eff": 2
+  },
+  {
+   "id": 2,
+   "n_drew": 2,
+   "n_annotators": 2,
+   "authors": [
+    "050101",
+    "050103"
+   ],
+   "chirality": 3,
+   "cd_diff": [
+    "050302"
+   ],
+   "cd_same": 0,
+   "a": 5.0,
+   "b": 0.0,
+   "frozen": true,
+   "opening": 1.0,
+   "n_drew_eff": 3
+  }
+ ]
+}

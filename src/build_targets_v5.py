@@ -1,30 +1,42 @@
-"""Rebuild the training targets with evidence gathered across days.
+"""Build the v5 label store: one record per filament, with a counter behind it.
 
-The consensus targets score a pixel by the fraction of that photograph's own
-annotators who covered it. That undercounts badly: 411 of the 707 photographs
-have a single annotator, so everything in them scores 1.0 or 0, and where three
-people worked, a filament only one of them drew scores 0.33 and the model learns
-it as mostly background. It recovers 29% of those.
+The consensus targets froze a filament's confidence at the fraction of a
+photograph's annotators who drew it. That is only part of the evidence, and it
+cannot change once written. This writes something the training loop can keep
+updating instead: an instance map, and beside it a count of what speaks for each
+filament and what speaks against.
 
-Rotation supplies evidence the within-photograph count cannot see. Linking every
-annotation to whatever it lands on in a photograph taken within three and a half
-days -- three times more often than a curve dropped where it does not belong --
-finds 1320 filaments that a second, independent photograph also shows. A
-filament one person drew and another photograph confirms is not doubtful.
+The score is a / (a + b), and a filament counts as real above 0.75. Human
+agreement opens the count:
 
-The weights follow what was measured rather than what seems reasonable:
+    3 annotators, 1 drew it     0.40      a 2.0   b 3.0
+    3 annotators, 2 drew it     0.80      a 4.0   b 1.0
+    2 annotators, 1 drew it     0.50      a 2.5   b 2.5
+    sole annotator              0.66      a 3.3   b 1.7
+    all annotators              1.00      immovable
 
-  one annotator, no other evidence      0.40   (40.4% of these are confirmed
-                                                by another photograph, measured)
-  one of several annotators, alone      0.29   (28.6%, measured)
-  confirmed by another photograph      +0.30 per independent confirmation
-  every annotator of the photograph     1.00   (nothing to add)
+The opening weight is 5 in every case, so later evidence can move it -- except
+where everyone agreed, which nothing may lower.
 
-Human marks are a floor. Nothing here lowers a pixel a person drew; the
-adjustment only raises what the evidence supports.
+Rotation supplies the rest. A filament drawn in one photograph is carried to
+another taken within three and a half days; the projection misses by a median
+14 px, measured against filaments annotated in both. Where it lands on an
+annotation, who drew that annotation decides what it is worth:
 
-Written per photograph, same layout as consensus/, so the training code needs
-only a different --consensus-dir.
+    a different annotator      counts as another annotator's vote -- an
+                               independent pair of eyes on a different image
+    the same annotator         a += 2.5, roughly two epochs of model agreement:
+                               a different image, but the same person's habits
+
+Nothing reaches 0.75 on geometry alone. A singly-drawn filament with one
+same-annotator confirmation sits at 0.54; the model has to supply the rest
+during training.
+
+Written per photograph:
+  inst.png      uint16 instance ids over the annotation outlines
+  spine_id.png  uint16 instance ids along the spines
+  radius.png    half-width
+  meta.json     per-instance a, b, chirality, and where the evidence came from
 """
 from __future__ import annotations
 
@@ -39,92 +51,170 @@ from scipy.ndimage import distance_transform_edt
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 BASE = ROOT / "MAGFiLO_1.0_Kaggle_2026" / "train"
-OUT = ROOT / "consensus_v5"
+OUT = ROOT / "labels_v5"
 sys.path.insert(0, str(HERE))
 from solar_ephemeris import solar_angles                             # noqa: E402
 from propagate_labels import obs_time, summarise, project            # noqa: E402
-from spine_data import (rasterize, spine_heatmap, DISK_CX, DISK_CY,  # noqa: E402
-                        DISK_R, FULL)
+from spine_data import FULL                                          # noqa: E402
 
 MAX_GAP = 3.5
 TOL_PX = 25
 HIT_FRAC = 0.30
-SIGMA = 3.0
+MERGE_IOU = 0.30           # two annotators' outlines this close are one filament
+PRIOR_WEIGHT = 5.0
+SAME_AUTHOR_A = 2.5        # a same-annotator confirmation from another day
 
-W_ALONE_MULTI = 0.29      # one of several annotators drew it, measured
-W_ALONE_SINGLE = 0.40     # sole annotator of the photograph, measured
-W_CONFIRM = 0.30          # each independent confirmation from another photograph
+# what a filament opens at, by (how many drew it, how many looked)
+OPENING = {(1, 1): 0.66, (1, 2): 0.50, (2, 2): 1.00,
+           (1, 3): 0.40, (2, 3): 0.80, (3, 3): 1.00}
 
 
-def label_map(anns):
-    lab = np.zeros((FULL, FULL), np.int32)
-    for k, a in enumerate(anns, 1):
-        im = Image.new("L", (FULL, FULL), 0)
-        dr = ImageDraw.Draw(im)
+CROSSDAY_CAP = 0.90        # evidence from another day never equals same-frame
+                           # unanimity: about a third of the links are chance
+
+
+def opening_score(v, n):
+    """The table first. A sole annotator is 0.66, not 1.0 -- nobody checked."""
+    if (v, n) in OPENING:
+        return OPENING[(v, n)]
+    if v >= n:
+        return 1.0
+    return float(min(1.0, 1.2 * v / n))
+
+
+def poly_mask(anns):
+    im = Image.new("L", (FULL, FULL), 0)
+    dr = ImageDraw.Draw(im)
+    for a in anns:
         for poly in a["segmentation"]:
             if len(poly) >= 6:
                 dr.polygon(list(zip(poly[0::2], poly[1::2])), fill=1)
-        lab[np.asarray(im, bool)] = k
-    dist, idx = distance_transform_edt(lab == 0, return_indices=True)
-    return lab, dist, idx
+    return np.asarray(im, bool)
 
 
-def hit(lab, dist, idx, px, py):
+def bbox_of(a):
+    x, y, w, h = a["bbox"]
+    return x, y, x + w, y + h
+
+
+def overlaps(a, b):
+    ax0, ay0, ax1, ay1 = bbox_of(a)
+    bx0, by0, bx1, by1 = bbox_of(b)
+    return not (ax1 < bx0 or bx1 < ax0 or ay1 < by0 or by1 < ay0)
+
+
+def group_filaments(anns):
+    """Annotations of one photograph, grouped so each group is one filament."""
+    n = len(anns)
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    masks = {}
+    for i, j in combinations(range(n), 2):
+        if not overlaps(anns[i], anns[j]):
+            continue
+        for k in (i, j):
+            if k not in masks:
+                masks[k] = poly_mask([anns[k]])
+        inter = np.logical_and(masks[i], masks[j]).sum()
+        if not inter:
+            continue
+        union = np.logical_or(masks[i], masks[j]).sum()
+        if inter / union >= MERGE_IOU:
+            ri, rj = find(i), find(j)
+            if ri != rj:
+                parent[ri] = rj
+    groups = collections.defaultdict(list)
+    for i in range(n):
+        groups[find(i)].append(i)
+    return list(groups.values())
+
+
+def rasterise(anns, groups, spine_width=3, pad=6):
+    """Instance id maps for the outlines and for the spines, plus half-widths.
+
+    Everything is drawn inside each filament's own bounding box. A filament
+    occupies a few thousand of the four million pixels in a frame, and running
+    the distance transform over the whole frame for each of them cost ten
+    seconds a photograph -- about two hours over the dataset, for nothing.
+    """
+    inst = np.zeros((FULL, FULL), np.uint16)
+    spid = np.zeros((FULL, FULL), np.uint16)
+    radius = np.zeros((FULL, FULL), np.float32)
+    for gi, members in enumerate(groups, 1):
+        xs0 = ys0 = FULL
+        xs1 = ys1 = 0
+        for k in members:
+            x0, y0, x1, y1 = bbox_of(anns[k])
+            xs0, ys0 = min(xs0, x0), min(ys0, y0)
+            xs1, ys1 = max(xs1, x1), max(ys1, y1)
+        x0 = int(max(0, xs0 - pad)); y0 = int(max(0, ys0 - pad))
+        x1 = int(min(FULL, xs1 + pad + 1)); y1 = int(min(FULL, ys1 + pad + 1))
+        w, h = x1 - x0, y1 - y0
+        if w <= 0 or h <= 0:
+            continue
+        im = Image.new("L", (w, h), 0)
+        dr = ImageDraw.Draw(im)
+        sp = Image.new("L", (w, h), 0)
+        ds = ImageDraw.Draw(sp)
+        for k in members:
+            a = anns[k]
+            for poly in a["segmentation"]:
+                if len(poly) >= 6:
+                    dr.polygon([(x - x0, y - y0)
+                                for x, y in zip(poly[0::2], poly[1::2])], fill=1)
+            s = a["spine"]
+            pts = [(x - x0, y - y0) for x, y in zip(s[0::2], s[1::2])]
+            if len(pts) >= 2:
+                ds.line(pts, fill=1, width=spine_width)
+        m = np.asarray(im, bool)
+        if not m.any():
+            continue
+        sub_inst = inst[y0:y1, x0:x1]
+        sub_inst[m] = gi
+        sub_spid = spid[y0:y1, x0:x1]
+        sub_spid[np.asarray(sp, bool)] = gi
+        d = distance_transform_edt(m)
+        sub_rad = radius[y0:y1, x0:x1]
+        sub_rad[m] = np.maximum(sub_rad[m], d[m])
+    return inst, spid, radius
+
+
+def label_lookup(inst):
+    dist, idx = distance_transform_edt(inst == 0, return_indices=True)
+    return dist, idx
+
+
+def hit_id(inst, dist, idx, px, py):
     xi = np.clip(np.round(px).astype(int), 0, FULL - 1)
     yi = np.clip(np.round(py).astype(int), 0, FULL - 1)
     near = dist[yi, xi] <= TOL_PX
     if near.mean() < HIT_FRAC:
         return 0
-    v = lab[idx[0][yi[near], xi[near]], idx[1][yi[near], xi[near]]]
+    v = inst[idx[0][yi[near], xi[near]], idx[1][yi[near], xi[near]]]
     v = v[v > 0]
     return int(np.bincount(v).argmax()) if len(v) else 0
-
-
-def gather(photos, flat, times, owner, photo_recs):
-    """How many other photographs independently show each annotation."""
-    pairs = [(a, b) for a, b in combinations(photos, 2)
-             if 0.02 < abs((times[b] - times[a]).total_seconds()) / 86400 <= MAX_GAP]
-    by_target = collections.defaultdict(list)
-    for sa, sb in pairs:
-        by_target[sb].append(sa)
-        by_target[sa].append(sb)
-    print(f"{len(pairs)} pairs within {MAX_GAP} days over {len(by_target)} photographs")
-
-    confirm = collections.defaultdict(set)   # (photo, index) -> other photographs
-    t0 = time.time()
-    for k, dst in enumerate(sorted(by_target), 1):
-        lab, dist, idx = label_map(flat[dst])
-        for src in by_target[dst]:
-            ang = solar_angles(times[src])
-            for j, a in enumerate(flat[src]):
-                su = summarise(a, ang)
-                if su is None:
-                    continue
-                p = project(su, times[src], times[dst])
-                if p is None:
-                    continue
-                h = hit(lab, dist, idx, p["px"], p["py"])
-                if h:
-                    # each side gains a confirmation from the other photograph
-                    confirm[(dst, h - 1)].add(src)
-                    confirm[(src, j)].add(dst)
-        del lab, dist, idx
-        if k % 50 == 0:
-            el = time.time() - t0
-            print(f"  {k}/{len(by_target)}  {el/60:.0f} min, "
-                  f"{el/k*(len(by_target)-k)/60:.0f} min left", flush=True)
-    return confirm
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(OUT))
     args = ap.parse_args()
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
+    out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
 
     d = json.load(open(BASE / "MAGFiLO_1.0_Annotations_kaggle2026_train.json"))
-    photo_of = {im["id"]: im["id"].split("-")[1] for im in d["images"]}
+    # image record id is "<group><annotator>-<photograph>"; the six-digit prefix
+    # identifies the person, and it is stable across the photographs they did
+    author_of, photo_of = {}, {}
+    for im in d["images"]:
+        pref, st = im["id"].split("-")
+        author_of[im["id"]] = pref
+        photo_of[im["id"]] = st
     ann_of = collections.defaultdict(list)
     for a in d["annotations"]:
         ann_of[a["image_id"]].append(a)
@@ -134,78 +224,120 @@ def main():
     photos = sorted(photo_recs)
     times = {s: obs_time(s) for s in photos}
 
-    flat, owner = {}, {}
-    for s in photos:
-        lst = []
+    print(f"{len(photos)} photographs, {len(d['annotations'])} annotations, "
+          f"{len(set(author_of.values()))} annotator identities")
+
+    # ---- 1. group each photograph's annotations into filaments -------------
+    t0 = time.time()
+    store = {}
+    for k, s in enumerate(photos, 1):
+        anns, who = [], []
         for rid in sorted(photo_recs[s]):
             for a in ann_of[rid]:
-                lst.append(a)
-                owner[id(a)] = rid
-        flat[s] = lst
-    print(f"{len(photos)} photographs, {sum(len(v) for v in flat.values())} annotations")
+                anns.append(a); who.append(author_of[rid])
+        groups = group_filaments(anns)
+        inst, spid, radius = rasterise(anns, groups)
+        n_ann = len(photo_recs[s])
+        recs = []
+        for gi, members in enumerate(groups, 1):
+            drew = {who[i] for i in members}
+            cats = collections.Counter(anns[i]["category_id"] for i in members)
+            recs.append(dict(id=gi, n_drew=len(drew), n_annotators=n_ann,
+                             authors=sorted(drew),
+                             chirality=int(cats.most_common(1)[0][0]),
+                             cd_diff=[], cd_same=0))
+        store[s] = dict(anns=anns, groups=groups, recs=recs,
+                        inst=inst, spid=spid, radius=radius)
+        if k % 100 == 0:
+            el = time.time() - t0
+            print(f"  grouped {k}/{len(photos)}  {el/60:.0f} min, "
+                  f"{el/k*(len(photos)-k)/60:.0f} min left", flush=True)
+    print(f"grouping done: {sum(len(v['recs']) for v in store.values())} filaments")
 
-    confirm = gather(photos, flat, times, owner, photo_recs)
-    n_conf = sum(1 for v in confirm.values() if v)
-    print(f"{n_conf} annotations confirmed by at least one other photograph\n")
+    # ---- 2. carry every filament to the neighbouring photographs -----------
+    pairs = [(a, b) for a, b in combinations(photos, 2)
+             if 0.02 < abs((times[b] - times[a]).total_seconds()) / 86400 <= MAX_GAP]
+    by_target = collections.defaultdict(list)
+    for sa, sb in pairs:
+        by_target[sb].append(sa); by_target[sa].append(sb)
+    print(f"\n{len(pairs)} pairs within {MAX_GAP} days over {len(by_target)} photographs")
 
-    # per-annotation weight
+    t0 = time.time()
+    for k, dst in enumerate(sorted(by_target), 1):
+        S = store[dst]
+        dist, idx = label_lookup(S["inst"])
+        for src in by_target[dst]:
+            T = store[src]
+            ang = solar_angles(times[src])
+            for gi, members in enumerate(T["groups"], 1):
+                a = T["anns"][members[0]]
+                su = summarise(a, ang)
+                if su is None:
+                    continue
+                p = project(su, times[src], times[dst])
+                if p is None:
+                    continue
+                h = hit_id(S["inst"], dist, idx, p["px"], p["py"])
+                if not h:
+                    continue
+                # who confirms whom: the source filament's authors against the
+                # target filament's authors
+                src_auth = set(T["recs"][gi - 1]["authors"])
+                dst_auth = set(S["recs"][h - 1]["authors"])
+                for rec, other in ((S["recs"][h - 1], src_auth),
+                                   (T["recs"][gi - 1], dst_auth)):
+                    new = other - set(rec["authors"])
+                    if new:
+                        rec["cd_diff"] = sorted(set(rec["cd_diff"]) | new)
+                    else:
+                        rec["cd_same"] += 1
+        del dist, idx
+        if k % 50 == 0:
+            el = time.time() - t0
+            print(f"  linked {k}/{len(by_target)}  {el/60:.0f} min, "
+                  f"{el/k*(len(by_target)-k)/60:.0f} min left", flush=True)
+
+    # ---- 3. opening counts, and write ------------------------------------
     stats = collections.Counter()
     for s in photos:
-        n_ann = len(photo_recs[s])
-        lab, dist, idx = label_map(flat[s])
-        drew = collections.defaultdict(set)
-        which = []
-        for a in flat[s]:
-            sx = np.asarray(a["spine"][0::2], float)
-            sy = np.asarray(a["spine"][1::2], float)
-            h = hit(lab, dist, idx, sx, sy)
-            which.append(h)
-            drew[h].add(owner[id(a)])
-
-        weights = []
-        for j, (a, h) in enumerate(zip(flat[s], which)):
-            v = len(drew[h])
-            if n_ann == 1:
-                w = W_ALONE_SINGLE
-            elif v >= n_ann:
-                w = 1.0
-            elif v == 1:
-                w = W_ALONE_MULTI
-            else:
-                w = v / n_ann
-            base = w
-            w = min(1.0, w + W_CONFIRM * len(confirm.get((s, j), ())))
-            weights.append(w)
-            stats["raised" if w > base + 1e-6 else "unchanged"] += 1
-
-        # rasterise, weighted
-        votes = np.zeros((FULL, FULL), np.float32)
-        spine_v = np.zeros((FULL, FULL), np.float32)
-        rad_sum = np.zeros((FULL, FULL), np.float32)
-        rad_cnt = np.zeros((FULL, FULL), np.float32)
-        for a, w in zip(flat[s], weights):
-            mask, spine, radius = rasterize([a])
-            votes = np.maximum(votes, mask.astype(np.float32) * w)
-            spine_v = np.maximum(spine_v, spine_heatmap(spine, SIGMA) * w)
-            rad_sum += radius * mask
-            rad_cnt += mask
-        radius = np.divide(rad_sum, np.maximum(rad_cnt, 1.0))
+        S = store[s]
+        for rec in S["recs"]:
+            n = rec["n_annotators"]
+            v = rec["n_drew"]
+            # a different annotator on another day is another pair of eyes,
+            # but capped: it is a different image, and a share of the links are
+            # chance rather than the same filament
+            v_eff = v + len(rec["cd_diff"])
+            n_eff = max(n, v_eff)
+            score = opening_score(v, n)
+            if rec["cd_diff"]:
+                # evidence may only raise: a filament everyone drew stays at 1.0
+                score = max(score, min(opening_score(v_eff, n_eff), CROSSDAY_CAP))
+            frozen = v >= n and n >= 2          # everyone who looked drew it
+            a = PRIOR_WEIGHT * score
+            b = PRIOR_WEIGHT * (1.0 - score)
+            a += SAME_AUTHOR_A * rec["cd_same"]
+            rec.update(a=round(float(a), 3), b=round(float(b), 3),
+                       frozen=bool(frozen), opening=round(float(score), 3),
+                       n_drew_eff=v_eff)
+            stats["frozen" if frozen else "movable"] += 1
+            if rec["cd_diff"]:
+                stats["confirmed_by_other_author"] += 1
+            if rec["cd_same"]:
+                stats["confirmed_by_same_author"] += 1
+            if not frozen and a / (a + b) >= 0.75:
+                stats["already_above_threshold"] += 1
 
         dd = out / s
         dd.mkdir(exist_ok=True)
-        Image.fromarray((np.clip(votes, 0, 1) * 255).astype(np.uint8)).save(
-            dd / "mask_vote.png", optimize=True)
-        Image.fromarray((np.clip(spine_v, 0, 1) * 255).astype(np.uint8)).save(
-            dd / "spine_vote.png", optimize=True)
-        Image.fromarray(np.clip(radius, 0, 255).astype(np.uint8)).save(
+        Image.fromarray(S["inst"]).save(dd / "inst.png", optimize=True)
+        Image.fromarray(S["spid"]).save(dd / "spine_id.png", optimize=True)
+        Image.fromarray(np.clip(S["radius"], 0, 255).astype(np.uint8)).save(
             dd / "radius.png", optimize=True)
-        json.dump({"n_annotators": n_ann, "n_filaments": len(flat[s]),
-                   "weights": [round(w, 3) for w in weights]},
-                  open(dd / "meta.json", "w"))
-        del lab, dist, idx
+        json.dump({"photograph": s, "n_annotators": len(photo_recs[s]),
+                   "filaments": S["recs"]}, open(dd / "meta.json", "w"), indent=1)
 
-    print(f"weights raised by cross-day evidence: {stats['raised']}, "
-          f"left alone: {stats['unchanged']}")
+    print(f"\n{dict(stats)}")
     print(f"wrote {len(list(out.iterdir()))} photographs to {out}")
 
 

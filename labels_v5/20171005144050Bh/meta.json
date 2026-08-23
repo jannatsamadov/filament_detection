@@ -1,0 +1,24 @@
+{
+ "photograph": "20171005144050Bh",
+ "n_annotators": 1,
+ "filaments": [
+  {
+   "id": 1,
+   "n_drew": 1,
+   "n_annotators": 1,
+   "authors": [
+    "050202"
+   ],
+   "chirality": 2,
+   "cd_diff": [
+    "030101"
+   ],
+   "cd_same": 0,
+   "a": 4.5,
+   "b": 0.5,
+   "frozen": false,
+   "opening": 0.9,
+   "n_drew_eff": 2
+  }
+ ]
+}

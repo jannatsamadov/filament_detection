@@ -1,0 +1,117 @@
+{
+ "photograph": "20120914063134Lh",
+ "n_annotators": 2,
+ "filaments": [
+  {
+   "id": 1,
+   "n_drew": 1,
+   "n_annotators": 2,
+   "authors": [
+    "040301"
+   ],
+   "chirality": 3,
+   "cd_diff": [
+    "010402"
+   ],
+   "cd_same": 0,
+   "a": 4.5,
+   "b": 0.5,
+   "frozen": false,
+   "opening": 0.9,
+   "n_drew_eff": 2
+  },
+  {
+   "id": 2,
+   "n_drew": 1,
+   "n_annotators": 2,
+   "authors": [
+    "040301"
+   ],
+   "chirality": 2,
+   "cd_diff": [
+    "010401",
+    "010402",
+    "010403"
+   ],
+   "cd_same": 0,
+   "a": 4.5,
+   "b": 0.5,
+   "frozen": false,
+   "opening": 0.9,
+   "n_drew_eff": 4
+  },
+  {
+   "id": 3,
+   "n_drew": 2,
+   "n_annotators": 2,
+   "authors": [
+    "040301",
+    "040302"
+   ],
+   "chirality": 3,
+   "cd_diff": [],
+   "cd_same": 0,
+   "a": 5.0,
+   "b": 0.0,
+   "frozen": true,
+   "opening": 1.0,
+   "n_drew_eff": 2
+  },
+  {
+   "id": 4,
+   "n_drew": 1,
+   "n_annotators": 2,
+   "authors": [
+    "040302"
+   ],
+   "chirality": 2,
+   "cd_diff": [
+    "010401",
+    "010402",
+    "010403"
+   ],
+   "cd_same": 0,
+   "a": 4.5,
+   "b": 0.5,
+   "frozen": false,
+   "opening": 0.9,
+   "n_drew_eff": 4
+  },
+  {
+   "id": 5,
+   "n_drew": 1,
+   "n_annotators": 2,
+   "authors": [
+    "040302"
+   ],
+   "chirality": 3,
+   "cd_diff": [
+    "010401",
+    "010402",
+    "010403"
+   ],
+   "cd_same": 0,
+   "a": 4.5,
+   "b": 0.5,
+   "frozen": false,
+   "opening": 0.9,
+   "n_drew_eff": 4
+  },
+  {
+   "id": 6,
+   "n_drew": 1,
+   "n_annotators": 2,
+   "authors": [
+    "040302"
+   ],
+   "chirality": 3,
+   "cd_diff": [],
+   "cd_same": 0,
+   "a": 2.5,
+   "b": 2.5,
+   "frozen": false,
+   "opening": 0.5,
+   "n_drew_eff": 1
+  }
+ ]
+}

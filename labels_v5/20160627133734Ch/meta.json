@@ -1,0 +1,46 @@
+{
+ "photograph": "20160627133734Ch",
+ "n_annotators": 1,
+ "filaments": [
+  {
+   "id": 1,
+   "n_drew": 1,
+   "n_annotators": 1,
+   "authors": [
+    "030302"
+   ],
+   "chirality": 2,
+   "cd_diff": [
+    "020401",
+    "020403",
+    "040401"
+   ],
+   "cd_same": 0,
+   "a": 4.5,
+   "b": 0.5,
+   "frozen": false,
+   "opening": 0.9,
+   "n_drew_eff": 4
+  },
+  {
+   "id": 2,
+   "n_drew": 1,
+   "n_annotators": 1,
+   "authors": [
+    "030302"
+   ],
+   "chirality": 2,
+   "cd_diff": [
+    "020401",
+    "020403",
+    "040401"
+   ],
+   "cd_same": 0,
+   "a": 4.5,
+   "b": 0.5,
+   "frozen": false,
+   "opening": 0.9,
+   "n_drew_eff": 4
+  }
+ ]
+}

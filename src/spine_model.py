@@ -37,9 +37,12 @@ class SpineUNet(nn.Module):
     """Encoder-decoder producing (semantic logit, spine logit, radius)."""
 
     def __init__(self, encoder="resnet34", pretrained=True, in_channels=1,
-                 decoder_width=(256, 128, 64, 32, 16)):
+                 decoder_width=(256, 128, 64, 32, 16), n_chirality=0,
+                 n_queries=0):
         super().__init__()
         self.in_channels = in_channels
+        self.n_chirality = n_chirality
+        self.n_queries = n_queries
         fn = {"resnet18": resnet18, "resnet34": resnet34}[encoder]
         net = fn(weights="DEFAULT" if pretrained else None)
 
@@ -75,6 +78,23 @@ class SpineUNet(nn.Module):
         for h in (self.head_sem, self.head_spine):
             nn.init.constant_(h.bias, -4.0)
 
+        # Chirality is in the data and has never been used: Left 2535, Right
+        # 2590, Unidentifiable 3074. It does not enter the score, which is
+        # single-class, but asking for it forces the body to attend to the
+        # filament's internal structure rather than only its silhouette.
+        self.head_chirality = (nn.Conv2d(c[4], n_chirality, 1)
+                               if n_chirality else None)
+
+        # The object-level head. Everything above is trained per pixel, which
+        # cannot express "you produced one filament too many" -- the thing the
+        # score actually measures. Queries can: each answers whether a filament
+        # is there, and training matches them one-to-one against the real ones.
+        self.query_head = None
+        if n_queries:
+            from query_head import QueryHead
+            self.query_head = QueryHead(n_queries=n_queries, feat_ch=512,
+                                        mask_ch=c[2])
+
     @staticmethod
     def _up(x, like):
         return F.interpolate(x, size=like.shape[-2:], mode="bilinear", align_corners=False)
@@ -88,19 +108,29 @@ class SpineUNet(nn.Module):
 
         d = self.dec4(torch.cat([self._up(e4, e3), e3], 1))
         d = self.dec3(torch.cat([self._up(d, e2), e2], 1))
-        d = self.dec2(torch.cat([self._up(d, e1), e1], 1))
-        d = self.dec1(torch.cat([self._up(d, s), s], 1))
+        d2 = self.dec2(torch.cat([self._up(d, e1), e1], 1))    # /4, the mask features
+        d = self.dec1(torch.cat([self._up(d2, s), s], 1))
         d = self.dec0(self._up(d, x))
 
-        return {
+        out = {
             "sem": self.head_sem(d),
             "spine": self.head_spine(d),
             "radius": F.softplus(self.head_radius(d)),   # a width is never negative
         }
+        if self.head_chirality is not None:
+            out["chirality"] = self.head_chirality(d)
+        if self.query_head is not None:
+            # queries read the deepest encoder map (/32) and paint into the /4
+            # decoder map: coarse enough to be cheap, fine enough to separate
+            out["query"] = self.query_head(e4, d2)
+        return out
 
 
-def build_spine_model(encoder="resnet34", pretrained=True, in_channels=1):
-    return SpineUNet(encoder=encoder, pretrained=pretrained, in_channels=in_channels)
+def build_spine_model(encoder="resnet34", pretrained=True, in_channels=1,
+                      n_chirality=0, n_queries=0):
+    return SpineUNet(encoder=encoder, pretrained=pretrained,
+                     in_channels=in_channels, n_chirality=n_chirality,
+                     n_queries=n_queries)
 
 
 class SpineLoss(nn.Module):
@@ -110,9 +140,11 @@ class SpineLoss(nn.Module):
     annotations, and it is nearly 40% of every frame.
     """
 
-    def __init__(self, w_sem=1.0, w_spine=1.0, w_radius=0.1, pos_weight=20.0):
+    def __init__(self, w_sem=1.0, w_spine=1.0, w_radius=0.1, pos_weight=20.0,
+                 w_chirality=0.0):
         super().__init__()
         self.w_sem, self.w_spine, self.w_radius = w_sem, w_spine, w_radius
+        self.w_chirality = w_chirality
         self.register_buffer("pos_weight", torch.tensor(pos_weight))
 
     @staticmethod
@@ -143,6 +175,19 @@ class SpineLoss(nn.Module):
         total = (self.w_sem * (sem_bce + sem_dice)
                  + self.w_spine * (sp_bce + sp_dice)
                  + self.w_radius * rad)
-        return total, {"sem_bce": sem_bce.detach(), "sem_dice": sem_dice.detach(),
-                       "spine_bce": sp_bce.detach(), "spine_dice": sp_dice.detach(),
-                       "radius_l1": rad.detach()}
+        parts = {"sem_bce": sem_bce.detach(), "sem_dice": sem_dice.detach(),
+                 "spine_bce": sp_bce.detach(), "spine_dice": sp_dice.detach(),
+                 "radius_l1": rad.detach()}
+
+        # Chirality is asked only where a filament is; elsewhere there is no
+        # handedness to have, and scoring it there would drown the four classes
+        # in background.
+        if self.w_chirality and "chirality" in out and "chirality" in batch:
+            where = (batch["present"] * valid).squeeze(1) > 0.5
+            if where.any():
+                ce = F.cross_entropy(out["chirality"], batch["chirality"],
+                                     reduction="none")
+                ch = (ce * where).sum() / where.sum().clamp(min=1.0)
+                total = total + self.w_chirality * ch
+                parts["chirality_ce"] = ch.detach()
+        return total, parts

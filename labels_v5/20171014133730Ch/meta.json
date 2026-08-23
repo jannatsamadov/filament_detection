@@ -1,0 +1,54 @@
+{
+ "photograph": "20171014133730Ch",
+ "n_annotators": 1,
+ "filaments": [
+  {
+   "id": 1,
+   "n_drew": 1,
+   "n_annotators": 1,
+   "authors": [
+    "040201"
+   ],
+   "chirality": 3,
+   "cd_diff": [],
+   "cd_same": 0,
+   "a": 3.3,
+   "b": 1.7,
+   "frozen": false,
+   "opening": 0.66,
+   "n_drew_eff": 1
+  },
+  {
+   "id": 2,
+   "n_drew": 1,
+   "n_annotators": 1,
+   "authors": [
+    "040201"
+   ],
+   "chirality": 2,
+   "cd_diff": [],
+   "cd_same": 0,
+   "a": 3.3,
+   "b": 1.7,
+   "frozen": false,
+   "opening": 0.66,
+   "n_drew_eff": 1
+  },
+  {
+   "id": 3,
+   "n_drew": 1,
+   "n_annotators": 1,
+   "authors": [
+    "040201"
+   ],
+   "chirality": 3,
+   "cd_diff": [],
+   "cd_same": 0,
+   "a": 3.3,
+   "b": 1.7,
+   "frozen": false,
+   "opening": 0.66,
+   "n_drew_eff": 1
+  }
+ ]
+}
