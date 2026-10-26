@@ -59,7 +59,7 @@ def main():
     (HERE / "keep_cnn" / "run.py").write_text(keep, encoding="utf-8")
 
     built = [(dump, "aug_dump"), (merged, "aug_post"), (keep, "keep_cnn")]
-    for r in ("r2", "r3"):                     # one training kernel per later run
+    for r in ("r2", "r3", "r4"):                     # one training kernel per later run
         src = with_const(run, RUN_LINE, f'RUN = "{r}"')
         if f"--{r}-smoke" in sys.argv:
             src = with_const(src, "SMOKE = False", "SMOKE = True")

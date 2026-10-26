@@ -89,6 +89,9 @@ RUNS = {
     "r3": {"solar": dict(init="solar"),
            "r50all": dict(encoder="resnet50", epochs=45, all_data=True,
                           post=dict(thresh=0.75, merge=0, min_area=350))},
+    # run 4: more kinds of augmentation, and each applied more often ("heavy"),
+    # against run 1's `full` (R34) and run 2's `r50`
+    "r4": {"heavy": dict(aug="heavy"), "r50heavy": dict(aug="heavy", encoder="resnet50", epochs=45)},
 }
 RUN = "r1"                                   # kernels/build.py sets this per kernel
 ARMS = RUNS[RUN]
@@ -266,6 +269,66 @@ def augment_full(im, ma):
     return np.ascontiguousarray(photometric(im)), ma
 
 
+def smooth_field(amp, cells=6):
+    """A random field, smooth over ~FULL/cells px, in [-amp, amp]."""
+    g = np.random.default_rng(random.getrandbits(32)).uniform(-amp, amp, (cells, cells)).astype(np.float32)
+    return cv2.resize(g, (FULL, FULL), interpolation=cv2.INTER_CUBIC)
+
+
+def augment_heavy(im, ma):
+    """`full` plus scale, a smooth warp, uneven illumination, haze and anisotropic
+    seeing, with every photometric step applied more often and further."""
+    # scale about the disk centre on top of the any-angle rotation; at 0.92-1.08
+    # the limb stays inside the frame and filaments stay 7.5-9 px wide
+    M = cv2.getRotationMatrix2D((CX, CY), random.uniform(0.0, 360.0), random.uniform(0.92, 1.08))
+    bg = float(np.median(im[:48, :48]))
+    im = cv2.warpAffine(im, M, (FULL, FULL), flags=cv2.INTER_LINEAR,
+                        borderMode=cv2.BORDER_CONSTANT, borderValue=bg)
+    ma = cv2.warpAffine(ma, M, (FULL, FULL), flags=cv2.INTER_LINEAR,
+                        borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    if random.random() < 0.5:                        # atmospheric warp, up to ~4 px
+        a = random.uniform(1.0, 4.0)
+        yy, xx = np.mgrid[:FULL, :FULL].astype(np.float32)
+        mx, my = xx + smooth_field(a, 8), yy + smooth_field(a, 8)
+        im = cv2.remap(im, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+        ma = cv2.remap(ma, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    im, ma = augment_flip(im, ma)
+
+    x = im.astype(np.float32)
+    med = float(np.median(x[724:1324, 724:1324]))
+    y = x
+    if random.random() < 0.9:                        # contrast, wider than `full`
+        y = med + log_uniform(0.5, 2.0) * (y - med)
+    if random.random() < 0.7:
+        y = 255.0 * np.power(np.clip(y, 0.0, 255.0) / 255.0, log_uniform(0.7, 1.45))
+    if random.random() < 0.5:
+        y = y + random.uniform(-8.0, 8.0)
+    if random.random() < 0.6:                        # uneven illumination across the disk
+        y = y * (1.0 + smooth_field(random.uniform(0.02, 0.08), 4))
+    if random.random() < 0.3:                        # thin cloud: a smooth veil that lifts and flattens
+        veil = np.clip(smooth_field(1.0, 5), 0.0, None) * random.uniform(0.1, 0.35)
+        y = y * (1.0 - veil) + med * veil
+    x = x + disk_weight() * (y - x)
+
+    u = random.random()
+    if u < 0.3:                                      # worse seeing
+        x = cv2.GaussianBlur(x, (0, 0), random.uniform(0.5, 2.2))
+    elif u < 0.5:                                    # anisotropic seeing / tracking smear
+        x = cv2.GaussianBlur(x, (0, 0), sigmaX=random.uniform(0.3, 2.5), sigmaY=random.uniform(0.3, 2.5))
+    elif u < 0.8:                                    # better seeing: unsharp mask
+        s, a = random.uniform(1.0, 3.0), random.uniform(0.3, 1.5)
+        x = x + a * (x - cv2.GaussianBlur(x, (0, 0), s))
+    if random.random() < 0.5:
+        rng = np.random.default_rng(random.getrandbits(32))
+        x = x + rng.normal(0.0, random.uniform(1.0, 6.0), x.shape).astype(np.float32)
+
+    im = np.clip(x + 0.5, 0, 255).astype(np.uint8)
+    if random.random() < 0.6:
+        _, buf = cv2.imencode(".jpg", im, [cv2.IMWRITE_JPEG_QUALITY, random.randint(60, 95)])
+        im = cv2.imdecode(buf, cv2.IMREAD_GRAYSCALE)
+    return np.ascontiguousarray(im), np.ascontiguousarray(ma)
+
+
 def augment_flip(im, ma):
     if random.random() < 0.5:
         im, ma = im[:, ::-1], ma[:, ::-1]
@@ -303,7 +366,7 @@ class Frames(torch.utils.data.Dataset):
             im, ma = np.array(self.vimg[i - self.n]), np.array(self.vmsk[i - self.n])
         if self.target == "union":
             ma = np.where(ma > 0, 255, 0).astype(np.uint8)
-        im, ma = (augment_full if self.aug == "full" else augment_flip)(im, ma)
+        im, ma = {"full": augment_full, "heavy": augment_heavy}.get(self.aug, augment_flip)(im, ma)
         return to_input(im)[None], torch.from_numpy(ma).float().div_(255.0)[None]
 
 
