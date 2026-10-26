@@ -85,6 +85,24 @@ Kod: `post_local.py` §4–6. Çıxış: `kernels/aug_post/out_kaggle_r3/` (r2-n
   (`submission_ens-flip-full-r50all-solar-union_plain.csv`, 1372 sətir). Hər ikisi
   `verify_submission.py`-dan keçir (3 boş şəkil). **Submit edilməyib.**
 
+**Crop-CNN keep-rule, mərhələ 1 (`filament-keep-cnn`, CPU, 7020 s; kod `kernels/aug_unet/keep_cnn.py`).**
+5-li ansamblın val namizədləri (t 0.6, merge 3, ≥100 px; 1390 ədəd), ResNet-18 (ImageNet) crop-larda
+(şəkil + ehtimal + maska) + 10 əlamət, eyni 5 fold-da OOF:
+
+| qayda | val PQ | FP |
+|---|---|---|
+| sahə | 0.4312 | 769 |
+| GBM keep-rule | 0.4393 | 691 |
+| CNN | 0.4435 | 644 |
+| CNN+GBM | **0.4449** | 599 |
+| oracle | 0.5187 | 143 |
+
+Bootstrap (141 foto): CNN−GBM +0.0041 [−0.001, +0.009]; CNN+GBM−GBM +0.0056 [+0.001, +0.010].
+**Qazanc realdır, amma kiçikdir** — GBM→oracle boşluğunun ~7%-i; +0.01 həddinə çatmadı. Gözlənilən
+public ~0.38–0.39, 0.40 yox. Açıq sual: 1400 namizəd azdırmı (mərhələ 2: k-fold U-Net, ~12–15 saat GPU)?
+Ucuz yoxlama: öyrənmə əyrisi (namizədlərin 25/50/100%-i ilə OOF), CPU. Test CSV-ləri:
+`kernels/keep_cnn/out_kaggle/submission_keepcnn_*.csv`. **Submit edilməyib.**
+
 **Növbəti ideya (istifadəçidən):** şübhəli komponentləri (orta ehtimal) tam həlledicilikli
 crop-da ikinci CNN ilə yenidən yoxlamaq — öyrədilmiş keep-rule-un şəkil görən versiyası.
 
