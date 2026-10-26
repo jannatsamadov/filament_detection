@@ -67,7 +67,8 @@ yalnız D4 TTA ardıcıl kömək edir. **Hələ submit edilməyib** — yoxlanm�
 - `r50all`: val yoxdur. Kernel-in yazdığı `submission_r50all.csv` **plain** proqnozdur,
   amma 0.75/0/350 D4 xəritələri üçün seçilib. D4 CSV `aug_post`-dan gəlməlidir.
 - `kernels/unet_r3/out_kaggle/submission_{solar,r50all}.csv` (1193 və 1385 sətir)
-  `verify_submission.py`-dan keçir (3 boş şəkil xəbərdarlığı). **Submit edilməyib.**
+  `verify_submission.py`-dan keçir (3 boş şəkil xəbərdarlığı). **`solar` (plain) submit
+  edildi: public 0.35** — R50+D4 (0.36) və ansambldan (0.38) aşağı. `r50all` submit edilməyib.
 
 **Növbəti ideya (istifadəçidən):** şübhəli komponentləri (orta ehtimal) tam həlledicilikli
 crop-da ikinci CNN ilə yenidən yoxlamaq — öyrədilmiş keep-rule-un şəkil görən versiyası.
