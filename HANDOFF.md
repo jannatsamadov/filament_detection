@@ -54,6 +54,21 @@ yalnız D4 TTA ardıcıl kömək edir. **Hələ submit edilməyib** — yoxlanm�
   kimi göstərir. Yekun ansambl (məs. `r50all` + ən yaxşı validasiyalı R34) test xəritələrində
   qurulmalıdır — bu hələ yazılmayıb.
 
+**Run 3 nəticəsi (bitdi 12:48 UTC; GPU kvotası sonra 15.4 saat qalıb).** Plain val, kernel-in öz grid-i:
+
+| arm | ən yaxşı val PQ | PQ60 | son 4 val ortası | ep 3 |
+|---|---|---|---|---|
+| `solar` (R34, günəş init) | 0.4172 (ep 54, 0.7/7/500) | 0.3843 | 0.4160 | 0.326 |
+| r1 `full` (R34, ImageNet) | 0.4189 (ep 45) | 0.3829 | 0.4156 | 0.359 |
+| r2 `r50` (R50, ImageNet) | 0.4248 (ep 42) | 0.3852 | 0.4218 | 0.362 |
+
+- Günəş ön-təlimi heç nə vermir: son nəticə ImageNet ilə eynidir, başlanğıcda isə
+  daha zəifdir. **Ölü istiqamət.** `solar`-ın D4 balı hələ yoxdur (post kernel).
+- `r50all`: val yoxdur. Kernel-in yazdığı `submission_r50all.csv` **plain** proqnozdur,
+  amma 0.75/0/350 D4 xəritələri üçün seçilib. D4 CSV `aug_post`-dan gəlməlidir.
+- `kernels/unet_r3/out_kaggle/submission_{solar,r50all}.csv` (1193 və 1385 sətir)
+  `verify_submission.py`-dan keçir (3 boş şəkil xəbərdarlığı). **Submit edilməyib.**
+
 **Növbəti ideya (istifadəçidən):** şübhəli komponentləri (orta ehtimal) tam həlledicilikli
 crop-da ikinci CNN ilə yenidən yoxlamaq — öyrədilmiş keep-rule-un şəkil görən versiyası.
 
