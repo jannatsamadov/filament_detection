@@ -39,3 +39,4 @@ kernels/aug_dump/run.py
 kernels/aug_post/run.py
 kernels/unet_r2/run.py
 kernels/unet_r3/run.py
+kernels/keep_cnn/run.py

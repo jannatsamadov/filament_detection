@@ -9,6 +9,8 @@ could drift:
                     (CPU only: grid, ensemble, keep-rule, submission CSVs)
   unet_r2/run.py,   run.py with RUN = "r2" / "r3" (later pairs of trainings);
   unet_r3/run.py    --r2-smoke / --r3-smoke build one with SMOKE = True
+  keep_cnn/run.py   aug_post's file plus aug_unet/keep_cnn.py (the image-based
+                    keep-rule), entering at kaggle_keep_cnn() instead of main()
 
 Run it before every push of any of them. The generated files are gitignored.
 """
@@ -18,6 +20,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 TAIL = 'if __name__ == "__main__":\n    main()\n'
 CLI = "# ---------------------------------------------------------------- CLI"
+CNN_START = "# ---------------------------------------------------------------- keep-cnn settings"
 RUN_LINE = 'RUN = "r1"                                   # kernels/build.py sets this per kernel'
 
 
@@ -46,7 +49,16 @@ def main():
     (HERE / "aug_post").mkdir(exist_ok=True)
     (HERE / "aug_post" / "run.py").write_text(merged, encoding="utf-8")
 
-    built = [(dump, "aug_dump"), (merged, "aug_post")]
+    cnn = (HERE / "aug_unet" / "keep_cnn.py").read_text(encoding="utf-8")
+    keep = (merged[:-len(TAIL)]
+            + "\n\n# ================================================================ image-based keep-rule\n"
+            + "# copied from aug_unet/keep_cnn.py by kernels/build.py -- edit it there\n\n"
+            + cnn[cnn.index(CNN_START):cnn.index(CLI)]
+            + 'if __name__ == "__main__":\n    kaggle_keep_cnn()\n')
+    (HERE / "keep_cnn").mkdir(exist_ok=True)
+    (HERE / "keep_cnn" / "run.py").write_text(keep, encoding="utf-8")
+
+    built = [(dump, "aug_dump"), (merged, "aug_post"), (keep, "keep_cnn")]
     for r in ("r2", "r3"):                     # one training kernel per later run
         src = with_const(run, RUN_LINE, f'RUN = "{r}"')
         if f"--{r}-smoke" in sys.argv:

@@ -1,0 +1,15 @@
+{
+  "id": "jannatsamadov/filament-keep-cnn",
+  "title": "filament keep cnn",
+  "code_file": "run.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": "true",
+  "enable_gpu": "false",
+  "enable_tpu": "false",
+  "enable_internet": "true",
+  "dataset_sources": [],
+  "competition_sources": ["filament-segmentation-2026"],
+  "kernel_sources": ["jannatsamadov/filament-aug-dump", "jannatsamadov/filament-unet-r2", "jannatsamadov/filament-unet-r3"],
+  "model_sources": []
+}

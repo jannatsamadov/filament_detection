@@ -184,7 +184,11 @@ def keep_rule_job(job):
         X = comp_features(p, img, lab0, area0, ids)
     else:
         X = np.zeros((len(ids), 10), np.float32)
-    # per set, each component's matched IoU (0 if it matches nothing there)
+    return stem, X, matched_iou(lab, area, ids, sets), [len(c) for _, c in sets]
+
+
+def matched_iou(lab, area, ids, sets):
+    """Per set, each component's matched IoU (0 if it matches nothing there)."""
     Y = np.zeros((len(ids), len(sets)))
     pos = {j: n for n, j in enumerate(ids)}
     for s_i, (_, crops) in enumerate(sets):
@@ -198,7 +202,7 @@ def keep_rule_job(job):
                     iou = it / (int(c.sum()) + int(area[j]) - it)
                     if iou > 0.5:
                         Y[pos[j], s_i] = iou
-    return stem, X, Y, [len(c) for _, c in sets]
+    return Y
 
 
 def pq_for(frames, score, cut):
