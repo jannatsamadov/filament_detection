@@ -70,6 +70,21 @@ yalnız D4 TTA ardıcıl kömək edir. **Hələ submit edilməyib** — yoxlanm�
   `verify_submission.py`-dan keçir (3 boş şəkil xəbərdarlığı). **`solar` (plain) submit
   edildi: public 0.35** — R50+D4 (0.36) və ansambldan (0.38) aşağı. `r50all` submit edilməyib.
 
+**Post v3 (`filament-aug-post` versiya 3, 2026-10-26 16:29–18:33 UTC, yalnız CPU, 7374 s).**
+Kod: `post_local.py` §4–6. Çıxış: `kernels/aug_post/out_kaggle_r3/` (r2-nin çıxışı `out_kaggle_r2/`-də).
+
+- 5 validasiyalı model + ansambllar: hamısı 0.4259–0.4354 arasında. Ən yaxşısı 5 modelin
+  plain ansamblıdır, 0.4354 (t 0.65, merge 3, area 350). `solar` D4 0.4278.
+- **Maska sərhədi ayrıca (hysteresis/cut/±1 px): heç nə vermir.** 0.4357 vs 0.4354; SQ
+  0.66–0.68-dən çıxmır. SQ-ni sərhəd həddi yox, annotatorların forma fərqi saxlayır. **Ölü.**
+- Öyrədilmiş keep-rule bu dəfə +0.004 (0.4395) — 0.005 həddindən aşağı, istifadə edilmədi.
+- **Oracle (mükəmməl keep-rule, eyni namizədlər): 0.5187** (t 0.6; FP 727→132, TP ~eyni).
+  Seçimdə **+0.08** boşluq var — şəkil görən keep-rule (crop-CNN) üçün tavan budur.
+  İkinci hədd: hər həddə GT-nin ~1/3-ü (FN ~614/1849) heç bir namizədlə IoU>0.5 vermir.
+- Test-only: `r50all/d4` (r50-nin 0.75/0/350 ilə) və r50-ni `r50all` ilə əvəz edən 5-li ansambl
+  (`submission_ens-flip-full-r50all-solar-union_plain.csv`, 1372 sətir). Hər ikisi
+  `verify_submission.py`-dan keçir (3 boş şəkil). **Submit edilməyib.**
+
 **Növbəti ideya (istifadəçidən):** şübhəli komponentləri (orta ehtimal) tam həlledicilikli
 crop-da ikinci CNN ilə yenidən yoxlamaq — öyrədilmiş keep-rule-un şəkil görən versiyası.
 
