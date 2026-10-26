@@ -101,7 +101,7 @@ Bootstrap (141 foto): CNN−GBM +0.0041 [−0.001, +0.009]; CNN+GBM−GBM +0.005
 **Qazanc realdır, amma kiçikdir** — GBM→oracle boşluğunun ~7%-i; +0.01 həddinə çatmadı. Gözlənilən
 public ~0.38–0.39, 0.40 yox. Açıq sual: 1400 namizəd azdırmı (mərhələ 2: k-fold U-Net, ~12–15 saat GPU)?
 Ucuz yoxlama: öyrənmə əyrisi (namizədlərin 25/50/100%-i ilə OOF), CPU. Test CSV-ləri:
-`kernels/keep_cnn/out_kaggle/submission_keepcnn_*.csv`. **Submit edilməyib.**
+`kernels/keep_cnn/out_kaggle/submission_keepcnn_*.csv`. **Submit edildi** (CNN+GBM, r50all ilə): **public 0.38** — ən yaxşı ilə bərabər.
 
 **Növbəti ideya (istifadəçidən):** şübhəli komponentləri (orta ehtimal) tam həlledicilikli
 crop-da ikinci CNN ilə yenidən yoxlamaq — öyrədilmiş keep-rule-un şəkil görən versiyası.
