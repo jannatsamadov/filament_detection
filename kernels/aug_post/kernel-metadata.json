@@ -10,6 +10,6 @@
   "enable_internet": "false",
   "dataset_sources": [],
   "competition_sources": ["filament-segmentation-2026"],
-  "kernel_sources": ["jannatsamadov/filament-aug-dump", "jannatsamadov/filament-unet-r2"],
+  "kernel_sources": ["jannatsamadov/filament-aug-dump", "jannatsamadov/filament-unet-r2", "jannatsamadov/filament-unet-r3"],
   "model_sources": []
 }

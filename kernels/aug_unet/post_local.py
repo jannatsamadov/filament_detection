@@ -11,6 +11,10 @@ is CPU work on those maps, so it spends no GPU quota:
      always adds 0.5 to PQ's denominator (TP+FN or FP, either way) and q*IoU to
      its numerator, so PQ/2 is exactly where a component starts to pay
   3. a submission CSV for the best variant, checked by src/verify_submission.py
+  4. the outline on its own setting: detection threshold and mask extent apart
+  5. oracles: PQ with a perfect keep-rule, at several detection thresholds
+  6. models trained on every photograph (no validation maps) stand in on test
+     for the validated model they extend, with that model's tuned settings
 
 Scores are our scorer on the 141 held-out photographs, every annotation set --
 validation, not the leaderboard. Run:
@@ -32,6 +36,19 @@ import run  # noqa: E402  -- off Kaggle this hides the GPU and refuses if it is 
 THRESH = tuple(round(t, 2) for t in np.arange(0.30, 0.96, 0.05))
 MERGE = (0, 3, 7, 12)
 MIN_AREA = (100, 200, 350, 500, 750, 1000, 1500, 2500)
+
+# SQ sat at 0.67-0.68 for every model and mix while the grid tied a filament's
+# outline to the threshold that finds it. At 8 px wide, one pixel on each edge
+# is about a quarter of the IoU, so the outline gets a setting of its own:
+#   ("t", e)     e below the detection threshold: grow each kept component through
+#                pixels >= e, at most GROW px out; e above it: keep its pixels >= e
+#   ("morph", r) dilate (r > 0) or erode (r < 0) it by |r| px; 2 px or more cost
+#                0.08-0.12 PQ on the 10-frame smoke test, so only 1 px is tried
+NO_EXT = ("none", 0)
+EXTENTS = ([NO_EXT] + [("t", e) for e in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)]
+           + [("morph", r) for r in (-1, 1)])
+GROW = 8
+ORACLE_T = (0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9)
 
 
 # ---------------------------------------------------------------- inputs
@@ -148,15 +165,25 @@ def comp_features(p, img, lab, area, ids):
 
 
 def keep_rule_job(job):
-    """Components of one val frame at a fixed (thresh, merge), with features and targets."""
-    d, variant, stem, sets, t, k, a_min, tr_dir = job
+    """Components of one val frame at a fixed (thresh, merge), with features and targets.
+
+    Features describe the detection outline; targets (matched IoU) are scored on
+    the outline `ext` draws. feats=False skips the features, for the oracle.
+    """
+    d, variant, stem, sets, t, k, a_min, tr_dir, ext, feats = job
     p = load_map(Path(d), variant, "val", stem)
-    img = cv2.imread(str(Path(tr_dir) / f"{stem}.jpeg"), cv2.IMREAD_GRAYSCALE)
-    lab, area = run.components(p, t, k)
-    ids = [j for j in range(1, len(area)) if area[j] >= a_min]
+    lab0, area0 = run.components(p, t, k)
+    cand = area0 >= a_min
+    cand[0] = False
+    lab, area = extend(p, lab0, cand, tuple(ext), t)
+    ids = [j for j in range(1, len(area0)) if cand[j] and area[j] > 0]
     if not ids:
         return stem, np.zeros((0, 10), np.float32), np.zeros((0, len(sets))), [len(c) for _, c in sets]
-    X = comp_features(p, img, lab, area, ids)
+    if feats:
+        img = cv2.imread(str(Path(tr_dir) / f"{stem}.jpeg"), cv2.IMREAD_GRAYSCALE)
+        X = comp_features(p, img, lab0, area0, ids)
+    else:
+        X = np.zeros((len(ids), 10), np.float32)
     # per set, each component's matched IoU (0 if it matches nothing there)
     Y = np.zeros((len(ids), len(sets)))
     pos = {j: n for n, j in enumerate(ids)}
@@ -174,13 +201,29 @@ def keep_rule_job(job):
     return stem, X, Y, [len(c) for _, c in sets]
 
 
+def pq_for(frames, score, cut):
+    """Pooled PQ when a frame's components are kept where score > cut."""
+    tp = fp = fn = s = 0.0
+    start = 0
+    for _, Xf, Yf, n_gt in frames:
+        keep = score[start:start + len(Xf)] > cut
+        start += len(Xf)
+        for s_i, ng in enumerate(n_gt):
+            iou = Yf[keep, s_i] if len(Xf) else np.zeros(0)
+            t_ = int((iou > 0).sum())
+            tp += t_; s += float(iou.sum()); fp += int(keep.sum()) - t_; fn += ng - t_
+    den = tp + 0.5 * fp + 0.5 * fn
+    return s / den if den else 0.0, dict(TP=int(tp), FP=int(fp), FN=int(fn))
+
+
 def keep_rule(d, best, meta, gt, pool, tr_dir):
     from sklearn.ensemble import HistGradientBoostingRegressor
     by_frame = {}
     for i, g in enumerate(gt):
         by_frame.setdefault(g["frame"], []).append((i, g["crops"]))
     stems = [Path(f).stem for f in meta["val_files"]]
-    jobs = [(str(d), best["variant"], stems[f], sets, best["thresh"], best["merge"], 100, str(tr_dir))
+    jobs = [(str(d), best["variant"], stems[f], sets, best["thresh"], best["merge"], 100, str(tr_dir),
+             tuple(best.get("ext", NO_EXT)), True)
             for f, sets in by_frame.items()]
     frames = list(pool.imap(keep_rule_job, jobs, chunksize=2))
     X = np.concatenate([f[1] for f in frames])
@@ -195,21 +238,8 @@ def keep_rule(d, best, meta, gt, pool, tr_dir):
                                           min_samples_leaf=20, random_state=0).fit(X[~te], y[~te])
         oof[te] = m.predict(X[te])
 
-    def pq_for(cut):
-        tp = fp = fn = s = 0.0
-        start = 0
-        for _, Xf, Yf, n_gt in frames:
-            keep = oof[start:start + len(Xf)] > cut
-            start += len(Xf)
-            for s_i, ng in enumerate(n_gt):
-                iou = Yf[keep, s_i] if len(Xf) else np.zeros(0)
-                t_ = int((iou > 0).sum())
-                tp += t_; s += float(iou.sum()); fp += int(keep.sum()) - t_; fn += ng - t_
-        den = tp + 0.5 * fp + 0.5 * fn
-        return s / den if den else 0.0, dict(TP=int(tp), FP=int(fp), FN=int(fn))
-
     cuts = np.round(np.arange(0.05, 0.50, 0.025), 3)
-    scores = [(c, *pq_for(c)) for c in cuts]
+    scores = [(c, *pq_for(frames, oof, c)) for c in cuts]
     c_best, pq_best, cnt = max(scores, key=lambda r: r[1])
     final = HistGradientBoostingRegressor(max_iter=300, learning_rate=0.05, max_leaf_nodes=15,
                                           min_samples_leaf=20, random_state=0).fit(X, y)
@@ -222,6 +252,7 @@ def keep_rule(d, best, meta, gt, pool, tr_dir):
 def write_submission(d, best, rule, model, meta, out):
     rows, per = [], []
     te_dir = run.find_data()[2]
+    ext = tuple(best.get("ext", NO_EXT))
     for f in meta["test_files"]:
         stem = Path(f).stem
         p = load_map(d, best["variant"], "test", stem)
@@ -234,12 +265,153 @@ def write_submission(d, best, rule, model, meta, out):
                 ids = [j for j, q in zip(ids, pred) if q > rule["cut"]]
         else:
             ids = [j for j in range(1, len(area)) if area[j] >= best["min_area"]]
+        keep = np.zeros(len(area), bool)
+        keep[ids] = True
+        lab, area = extend(p, lab, keep, ext, best["thresh"])
+        ids = [j for j in ids if area[j] > 0]
         for n, j in enumerate(ids, 1):
             r = run.mu.encode(np.asfortranarray((lab == j).astype(np.uint8)))
             rows.append(f"{stem}_{n},{r['counts'].decode('ascii')}")
         per.append(len(ids))
     out.write_text("filament_id,segmentation_rle\n" + "".join(r + "\n" for r in rows))
     return len(rows), float(np.mean(per))
+
+
+# ---------------------------------------------------------------- 4. mask extent
+
+_DISK = None
+
+
+def on_disk():
+    global _DISK
+    if _DISK is None:
+        yy, xx = np.mgrid[:run.FULL, :run.FULL]
+        _DISK = ((xx - run.CX) ** 2 + (yy - run.CY) ** 2) <= run.R_DISK ** 2
+    return _DISK
+
+
+def extend(p, lab, keep, ext, t):
+    """Redraw the kept components' outlines: a new label image and its areas.
+
+    What is found and kept is decided on the detection outline, before this;
+    a component the new outline empties is dropped (its area becomes 0).
+    """
+    kind, v = ext
+    lab = np.where(keep[lab], lab, 0).astype(np.int32)
+    if kind == "none":
+        pass
+    elif (kind == "t" and v < t) or (kind == "morph" and v > 0):
+        allowed = on_disk() & (p >= int(round(255 * v))) if kind == "t" else on_disk()
+        cross = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+        f = lab.astype(np.float32)               # cv2 dilates float32; labels stay exact
+        for _ in range(GROW if kind == "t" else v):
+            g = cv2.dilate(f, cross)
+            new = (f == 0) & allowed & (g > 0)
+            if not new.any():
+                break
+            f[new] = g[new]                      # where two meet, the higher label wins
+        lab = f.astype(np.int32)
+    elif kind == "t":
+        lab[p < int(round(255 * v))] = 0
+    else:                                        # erode each component by |v| px
+        ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * -v + 1, 2 * -v + 1))
+        f = lab.astype(np.float32)
+        lab[(cv2.erode(f, ker) != f) | (cv2.dilate(f, ker) != f)] = 0
+    return lab, np.bincount(lab.ravel(), minlength=len(keep))
+
+
+def ext_name(ext):
+    return "" if ext[0] == "none" else f"_t{ext[1]}" if ext[0] == "t" else f"_m{ext[1]:+d}"
+
+
+def extent_job(job):
+    """Detection grid x outline settings for one frame, counts summed over its sets."""
+    d, variant, stem, sets = job
+    p = load_map(Path(d), variant, "val", stem)
+    tot = np.zeros((len(THRESH), len(MERGE), len(EXTENTS), len(MIN_AREA), 4))
+    first = np.zeros_like(tot)
+    for i, t in enumerate(THRESH):
+        for j, k in enumerate(MERGE):
+            lab0, area0 = run.components(p, t, k)
+            cand = area0 >= MIN_AREA[0]
+            cand[0] = False
+            for e_i, ext in enumerate(EXTENTS):
+                lab, area = extend(p, lab0, cand, ext, t)
+                for a_i, a in enumerate(MIN_AREA):
+                    keep = (area0 >= a) & (area > 0)
+                    keep[0] = False
+                    for idx, crops in sets:
+                        c = np.array(run.pq_counts(crops, lab, area, keep), float)
+                        tot[i, j, e_i, a_i] += c
+                        if idx < 60:
+                            first[i, j, e_i, a_i] += c
+    return tot, first
+
+
+def extent_grid(d, variant, meta, gt, pool):
+    """The best detection point with its own outline, and the best PQ per outline."""
+    by_frame = {}
+    for i, g in enumerate(gt):
+        by_frame.setdefault(g["frame"], []).append((i, g["crops"]))
+    stems = [Path(f).stem for f in meta["val_files"]]
+    jobs = [(str(d), variant, stems[f], sets) for f, sets in by_frame.items()]
+    tot = first = 0
+    for t, f in pool.imap_unordered(extent_job, jobs, chunksize=1):
+        tot, first = tot + t, first + f
+    pq = pq_of(tot)
+    i, j, e, a = np.unravel_index(np.argmax(pq), pq.shape)
+    c = tot[i, j, e, a]
+    best = dict(variant=variant, ext=EXTENTS[e], PQ=float(pq[i, j, e, a]),
+                PQ60=float(pq_of(first)[i, j, e, a]),
+                SQ=float(c[3] / max(c[0], 1)), RQ=float(c[0] / max(c[0] + 0.5 * c[1] + 0.5 * c[2], 1e-9)),
+                TP=int(c[0]), FP=int(c[1]), FN=int(c[2]),
+                thresh=THRESH[i], merge=MERGE[j], min_area=MIN_AREA[a])
+    per_ext = []
+    for e_i, ext in enumerate(EXTENTS):
+        i, j, a = np.unravel_index(np.argmax(pq[:, :, e_i]), pq[:, :, e_i].shape)
+        c = tot[i, j, e_i, a]
+        per_ext.append(dict(ext=ext, PQ=float(pq[i, j, e_i, a]), SQ=float(c[3] / max(c[0], 1)),
+                            RQ=float(c[0] / max(c[0] + 0.5 * c[1] + 0.5 * c[2], 1e-9)),
+                            thresh=THRESH[i], merge=MERGE[j], min_area=MIN_AREA[a]))
+    return best, per_ext
+
+
+# ---------------------------------------------------------------- 5. oracles
+
+def oracle(d, best, meta, gt, pool, tr_dir):
+    """PQ if each component were kept exactly when its true mean matched IoU pays.
+
+    The ceiling for any keep-rule, learned or image-based, on these candidates;
+    lower detection thresholds give it more of them to choose from.
+    """
+    by_frame = {}
+    for i, g in enumerate(gt):
+        by_frame.setdefault(g["frame"], []).append((i, g["crops"]))
+    stems = [Path(f).stem for f in meta["val_files"]]
+    ext = tuple(best.get("ext", NO_EXT))
+    out = []
+    for t in sorted(set(ORACLE_T) | {best["thresh"]}):
+        jobs = [(str(d), best["variant"], stems[f], sets, t, best["merge"], 100, str(tr_dir), ext, False)
+                for f, sets in by_frame.items()]
+        frames = list(pool.imap(keep_rule_job, jobs, chunksize=2))
+        y = np.concatenate([f[2].mean(axis=1) if f[2].shape[1] else np.zeros(len(f[2])) for f in frames])
+        cuts = np.round(np.arange(0.0, 0.60, 0.01), 3)
+        pq, cnt, c_best = max(((*pq_for(frames, y, c), c) for c in cuts), key=lambda r: r[0])
+        out.append(dict(thresh=t, merge=best["merge"], ext=ext, PQ=float(pq), cut=float(c_best),
+                        n_components=int(len(y)), **cnt))
+        print(f"  oracle keep-rule at t {t} merge {best['merge']}{ext_name(ext)}: PQ {pq:.4f}  "
+              f"TP {cnt['TP']} FP {cnt['FP']} FN {cnt['FN']}  ({len(y)} candidates)", flush=True)
+    return out
+
+
+def swap(variant, h, m):
+    """The variant with model h replaced by m; unchanged if h is not in it."""
+    model, view = variant.split("/")
+    if model.startswith("ens:"):
+        model = "ens:" + "+".join(m if x == h else x for x in model[4:].split("+"))
+    elif model == h:
+        model = m
+    return f"{model}/{view}"
 
 
 def post_main(src, d, out_dir, procs, smoke=False):
@@ -275,27 +447,80 @@ def post_main(src, d, out_dir, procs, smoke=False):
         ranked = sorted(have, key=lambda m: -single[m]["d4"]["PQ"])
         for k in range(2, len(have)):
             score(f"ens:{'+'.join(ranked[:k])}/d4", pool)
-        best = max(results, key=lambda r: r["PQ"])
+        grid_best = max(results, key=lambda r: r["PQ"])
+
+        # 4. the outline on its own setting, for the best single model and the best mix
+        best_single = max((single[m]["d4"] for m in have), key=lambda r: r["PQ"])
+        ext_results, per_ext = [], {}
+        for v in dict.fromkeys([best_single["variant"], grid_best["variant"]]):
+            b, rows = extent_grid(d, v, meta, gt, pool)
+            ext_results.append(b); per_ext[v] = rows
+            print(f"\noutline settings on {v} (best detection point for each; {time.time() - t0:.0f}s):",
+                  flush=True)
+            for r in rows:
+                print(f"    {str(tuple(r['ext'])):16s} PQ {r['PQ']:.4f}  SQ {r['SQ']:.3f} RQ {r['RQ']:.3f}  "
+                      f"at t {r['thresh']} merge {r['merge']} area {r['min_area']}", flush=True)
+        ext_best = max(ext_results, key=lambda r: r["PQ"])
+        use_ext = ext_best["PQ"] > grid_best["PQ"] + 0.005     # below that it is noise, not a gain
+        best = ext_best if use_ext else grid_best
+        print(f"\noutline: best {ext_best['variant']}{ext_name(ext_best['ext'])} PQ {ext_best['PQ']:.4f} "
+              f"(SQ {ext_best['SQ']:.3f}) vs grid best {grid_best['PQ']:.4f} -> "
+              f"{'used' if use_ext else 'not used'}", flush=True)
+
         _, tr_dir, _ = run.find_data()
         rule, model = keep_rule(d, best, meta, gt, pool, tr_dir)
-    print(f"\nlearned keep-rule on {best['variant']}: PQ {rule['PQ']:.4f} at cut {rule['cut']} "
-          f"(grid best {best['PQ']:.4f}; {rule['n_components']} components; "
-          f"TP {rule['TP']} FP {rule['FP']} FN {rule['FN']})", flush=True)
+        print(f"\nlearned keep-rule on {best['variant']}{ext_name(best.get('ext', NO_EXT))}: "
+              f"PQ {rule['PQ']:.4f} at cut {rule['cut']} (without it {best['PQ']:.4f}; "
+              f"{rule['n_components']} components; TP {rule['TP']} FP {rule['FP']} FN {rule['FN']})",
+              flush=True)
+        # 5. how much a perfect keep-rule would add, i.e. what an image-based one could reach
+        print("\noracles:", flush=True)
+        oracles = oracle(d, best, meta, gt, pool, tr_dir)
+
+    def csv_name(variant, ext=NO_EXT, rule=False):
+        return (f"submission_{variant.replace('/', '_').replace(':', '-').replace('+', '-')}"
+                f"{ext_name(ext)}{'_rule' if rule else ''}.csv")
 
     # one CSV per variant at its own best grid point, so the choice stays open
     files = {}
-    for b in results:
-        out = out_dir / f"submission_{b['variant'].replace('/', '_').replace(':', '-').replace('+', '-')}.csv"
+    for b in results + [b for b in ext_results if tuple(b["ext"]) != NO_EXT]:
+        ext = tuple(b.get("ext", NO_EXT))
+        out = out_dir / csv_name(b["variant"], ext)
         n, mean = write_submission(d, b, None, None, meta, out)
-        files[b["variant"]] = dict(file=out.name, rows=n, per_image=mean)
+        files[b["variant"] + ext_name(ext)] = dict(file=out.name, rows=n, per_image=mean)
     use_rule = rule["PQ"] > best["PQ"] + 0.005          # below that it is noise, not a gain
     if use_rule:
-        out = out_dir / f"submission_{best['variant'].replace('/', '_').replace(':', '-').replace('+', '-')}_rule.csv"
+        out = out_dir / csv_name(best["variant"], tuple(best.get("ext", NO_EXT)), True)
         n, mean = write_submission(d, best, rule, model, meta, out)
-        files[best["variant"] + "+rule"] = dict(file=out.name, rows=n, per_image=mean)
+        files[best["variant"] + ext_name(best.get("ext", NO_EXT)) + "+rule"] = dict(
+            file=out.name, rows=n, per_image=mean)
+
+    # 6. test-only models stand in for the validated model whose name they extend
+    # (r50all for r50), with everything that model was tuned to
+    stand_ins = {}
+    for m in sorted(set(dumped) - set(have)):
+        h = max((h for h in have if m.startswith(h)), key=len, default=None)
+        if h is None:
+            continue
+        stand_ins[m] = h
+        for b, with_rule in [(single[h]["d4"], False), (best, use_rule)]:
+            if swap(b["variant"], h, m) == b["variant"]:
+                continue                                  # h is not in this mix
+            b2 = dict(b, variant=swap(b["variant"], h, m))
+            ext = tuple(b2.get("ext", NO_EXT))
+            if b2["variant"] + ext_name(ext) + ("+rule" if with_rule else "") in files:
+                continue                                  # the best is that model's own D4
+            out = out_dir / csv_name(b2["variant"], ext, with_rule)
+            n, mean = write_submission(d, b2, rule if with_rule else None, model if with_rule else None,
+                                       meta, out)
+            files[b2["variant"] + ext_name(ext) + ("+rule" if with_rule else "")] = dict(
+                file=out.name, rows=n, per_image=mean, stands_in_for=b["variant"])
+
     for k, v in files.items():
         print(f"  {k:16s} -> {v['file']}: {v['rows']} rows, {v['per_image']:.1f} per image", flush=True)
     json.dump(dict(results=results, keep_rule=rule, used_keep_rule=use_rule, best=best, files=files,
+                   extent=dict(results=ext_results, per_ext=per_ext, used=use_ext, axes=EXTENTS, grow=GROW),
+                   oracle=oracles, stand_ins=stand_ins,
                    grid_axes=dict(thresh=THRESH, merge=MERGE, min_area=MIN_AREA), grids=grids),
               open(out_dir / "post_local.json", "w"), indent=1)
     print(f"total {time.time() - t0:.0f}s", flush=True)
