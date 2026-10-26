@@ -245,7 +245,12 @@ def write_submission(d, best, rule, model, meta, out):
 def post_main(src, d, out_dir, procs, smoke=False):
     """src: where dump_*.tar live; d: where they are unpacked; out_dir: results."""
     t0 = time.time()
-    have = extract(src, d)
+    dumped = extract(src, d)
+    # a model trained on every photograph has no honest validation maps: it can be
+    # ensembled on test, but nothing can be tuned or scored on it here
+    have = [m for m in dumped if (d / "dump" / m / "val_plain").exists()]
+    if set(dumped) - set(have):
+        print(f"test-only models (no validation maps): {sorted(set(dumped) - set(have))}", flush=True)
     meta, gt = ground_truth(smoke)
     print(f"{len(meta['val_files'])} val photographs, {len(gt)} annotation sets; models {have}",
           flush=True)
@@ -263,7 +268,8 @@ def post_main(src, d, out_dir, procs, smoke=False):
     with mp.Pool(procs) as pool:
         single = {m: {v: score(f"{m}/{v}", pool) for v in ("plain", "d4")} for m in have}
         if len(have) >= 2:
-            score("ens/plain", pool); score("ens/d4", pool)
+            everyone = "+".join(have)
+            score(f"ens:{everyone}/plain", pool); score(f"ens:{everyone}/d4", pool)
         # with several models the mean of all of them need not be the best mix:
         # also try the strongest two and three, ranked by their own D4 score
         ranked = sorted(have, key=lambda m: -single[m]["d4"]["PQ"])

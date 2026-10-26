@@ -7,8 +7,8 @@ could drift:
   aug_dump/run.py   run.py with MODE = "dump"  (GPU: write probability maps)
   aug_post/run.py   run.py with MODE = "post", plus post_local.py's analysis
                     (CPU only: grid, ensemble, keep-rule, submission CSVs)
-  unet_r2/run.py    run.py with RUN = "r2" (the second pair of trainings);
-                    --r2-smoke builds it with SMOKE = True
+  unet_r2/run.py,   run.py with RUN = "r2" / "r3" (later pairs of trainings);
+  unet_r3/run.py    --r2-smoke / --r3-smoke build one with SMOKE = True
 
 Run it before every push of any of them. The generated files are gitignored.
 """
@@ -46,16 +46,18 @@ def main():
     (HERE / "aug_post").mkdir(exist_ok=True)
     (HERE / "aug_post" / "run.py").write_text(merged, encoding="utf-8")
 
-    r2 = with_const(run, RUN_LINE, 'RUN = "r2"')
-    smoke = "--r2-smoke" in sys.argv
-    if smoke:
-        r2 = with_const(r2, "SMOKE = False", "SMOKE = True")
-    (HERE / "unet_r2").mkdir(exist_ok=True)
-    (HERE / "unet_r2" / "run.py").write_text(r2, encoding="utf-8")
+    built = [(dump, "aug_dump"), (merged, "aug_post")]
+    for r in ("r2", "r3"):                     # one training kernel per later run
+        src = with_const(run, RUN_LINE, f'RUN = "{r}"')
+        if f"--{r}-smoke" in sys.argv:
+            src = with_const(src, "SMOKE = False", "SMOKE = True")
+        (HERE / f"unet_{r}").mkdir(exist_ok=True)
+        (HERE / f"unet_{r}" / "run.py").write_text(src, encoding="utf-8")
+        built.append((src, f"unet_{r}" + (" (smoke)" if f"--{r}-smoke" in sys.argv else "")))
 
-    for src, name in ((dump, "aug_dump"), (merged, "aug_post"), (r2, "unet_r2")):
+    for src, name in built:
         compile(src, f"{name}/run.py", "exec")
-    print("built aug_dump/run.py, aug_post/run.py and unet_r2/run.py" + (" (r2 smoke)" if smoke else ""))
+    print("built " + ", ".join(name for _, name in built))
 
 
 if __name__ == "__main__":

@@ -75,13 +75,20 @@ CACHE = Path("/tmp/fil") if ON_KAGGLE else HERE / "out" / "cache"     # ~5 GB, n
 # The arms of a run, one per GPU. Each is a full training; only what is listed
 # differs from ARM_DEFAULTS. Run 1 (2026-10-26) was flip vs full: what the
 # augmentation is worth.
-ARM_DEFAULTS = dict(aug="full", encoder="resnet34", target="soft")
+ARM_DEFAULTS = dict(aug="full", encoder="resnet34", target="soft", init="imagenet", all_data=False)
 RUNS = {
     # run 1: what the augmentation is worth
     "r1": {"flip": dict(aug="flip"), "full": dict(aug="full")},
     # run 2, on top of heavy augmentation: a target that rewards single-annotator
     # filaments, and a deeper encoder (slower, so fewer epochs)
     "r2": {"union": dict(target="union"), "r50": dict(encoder="resnet50", epochs=45)},
+    # run 3: the solar-pretrained encoder (v4's, 3772 GONG frames) against ImageNet,
+    # validated; and the final R50 on all 707 photographs. With no held-out frames
+    # left, that arm trains a fixed number of epochs and uses the post-processing
+    # tuned for R50 in run 2 (D4: 0.75 / 0 / 350).
+    "r3": {"solar": dict(init="solar"),
+           "r50all": dict(encoder="resnet50", epochs=45, all_data=True,
+                          post=dict(thresh=0.75, merge=0, min_area=350))},
 }
 RUN = "r1"                                   # kernels/build.py sets this per kernel
 ARMS = RUNS[RUN]
@@ -158,10 +165,19 @@ def prepare(smoke, with_train=True):
             msk[i] = np.round(255.0 * acc / len(sets_of[f])).astype(np.uint8)
         img.flush(); msk.flush(); del img, msk
 
+    # validation frames keep their targets too, for an arm that trains on all of them
     vimg = np.lib.format.open_memmap(CACHE / "val_img.npy", "w+", np.uint8, (len(val_files), FULL, FULL))
+    vmsk = np.lib.format.open_memmap(CACHE / "val_msk.npy", "w+", np.uint8, (len(val_files), FULL, FULL))
     for i, f in enumerate(val_files):
         vimg[i] = cv2.imread(str(tr_dir / f), cv2.IMREAD_GRAYSCALE)
-    vimg.flush(); del vimg
+        acc = np.zeros((FULL, FULL), np.float32)
+        for sid in sets_of[f]:
+            u = np.zeros((FULL, FULL), bool)
+            for a in by_id[sid]:
+                u |= ann_mask(a)
+            acc += u
+        vmsk[i] = np.round(255.0 * acc / len(sets_of[f])).astype(np.uint8)
+    vimg.flush(); vmsk.flush(); del vimg, vmsk
 
     # ground truth per annotation set, each filament kept as a bbox crop
     index = {f: i for i, f in enumerate(val_files)}
@@ -266,18 +282,25 @@ class Frames(torch.utils.data.Dataset):
     """target: "soft" = the fraction of annotators who drew each pixel;
     "union" = drawn by anyone, which a single-annotator test set rewards."""
 
-    def __init__(self, n, aug, target="soft"):
-        self.n, self.aug, self.target = n, aug, target
+    def __init__(self, n, aug, target="soft", n_val=0):
+        """n training frames, then n_val validation frames appended (all-data arm)."""
+        self.n, self.n_val, self.aug, self.target = n, n_val, aug, target
         self.img = self.msk = None
 
     def __len__(self):
-        return self.n
+        return self.n + self.n_val
 
     def __getitem__(self, i):
         if self.img is None:                         # opened per worker process
             self.img = np.load(CACHE / "train_img.npy", mmap_mode="r")
             self.msk = np.load(CACHE / "train_msk.npy", mmap_mode="r")
-        im, ma = np.array(self.img[i]), np.array(self.msk[i])
+            if self.n_val:
+                self.vimg = np.load(CACHE / "val_img.npy", mmap_mode="r")
+                self.vmsk = np.load(CACHE / "val_msk.npy", mmap_mode="r")
+        if i < self.n:
+            im, ma = np.array(self.img[i]), np.array(self.msk[i])
+        else:
+            im, ma = np.array(self.vimg[i - self.n]), np.array(self.vmsk[i - self.n])
         if self.target == "union":
             ma = np.where(ma > 0, 255, 0).astype(np.uint8)
         im, ma = (augment_full if self.aug == "full" else augment_flip)(im, ma)
@@ -339,6 +362,25 @@ class UNet(nn.Module):
         d = self.dec2(torch.cat([self._up(d, e1), e1], 1))
         d = self.dec1(torch.cat([self._up(d, s), s], 1))
         return self.head(self.dec0(self._up(d, x)))
+
+
+def load_solar(model, tag=""):
+    """Start from the U-Net v4 pretrained on 3772 unlabelled GONG frames.
+
+    That checkpoint uses the same module names (stem, enc1-4, dec4-0), so every
+    tensor whose name and shape match is copied and only the output head starts
+    fresh. Solar weights exist for ResNet-34 only.
+    """
+    roots = [Path("/kaggle/input")] if ON_KAGGLE else [HERE.parents[1] / "checkpoints"]
+    path = next((p for r in roots for p in r.rglob("pretrain_r34_encoder.pt")), None)
+    if path is None:
+        sys.exit("solar init asked for, but pretrain_r34_encoder.pt is not attached")
+    sd = torch.load(path, map_location="cpu", weights_only=False)
+    own = model.state_dict()
+    ok = {k: v for k, v in sd.items() if k in own and own[k].shape == v.shape}
+    model.load_state_dict(ok, strict=False)
+    print(f"[{tag}] solar init from {path.name}: {len(ok)} of {len(own)} tensors loaded, "
+          f"{len(sd) - len(ok)} of the checkpoint's skipped", flush=True)
 
 
 def loss_fn(logit, y, valid, pos_weight=10.0):
@@ -473,10 +515,15 @@ def train_worker(args):
     ondisk = torch.from_numpy(ondisk_np).to(device)
     valid = ondisk[None, None]
 
-    model = UNet(cfg["encoder"], pretrained=True).to(device).to(memory_format=fmt(device))
+    model = UNet(cfg["encoder"], pretrained=cfg["init"] == "imagenet")
+    if cfg["init"] == "solar":
+        load_solar(model, tag)
+    model = model.to(device).to(memory_format=fmt(device))
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    n_val_train = len(meta["val_files"]) if cfg["all_data"] else 0
     loader = torch.utils.data.DataLoader(
-        Frames(n_train, cfg["aug"], cfg["target"]), batch_size=int(cfg.get("batch", args.batch)),
+        Frames(n_train, cfg["aug"], cfg["target"], n_val_train),
+        batch_size=int(cfg.get("batch", args.batch)),
         shuffle=True, drop_last=True,
         num_workers=args.workers, pin_memory=device.type == "cuda",
         persistent_workers=args.workers > 0)
@@ -511,7 +558,15 @@ def train_worker(args):
         print(f"[{tag}] epoch {epoch}/{epochs} loss {h['loss']:.4f} (bce {h['bce']:.4f} "
               f"dice {h['dice']:.4f}) {h['sec']:.0f}s {h['sec_per_step']:.2f}s/step {mem:.1f} GiB", flush=True)
 
-        if epoch % args.val_every == 0 or epoch == epochs:
+        if cfg["all_data"]:
+            # nothing is held out, so nothing to select on: keep the latest epoch,
+            # with the post-processing tuned on the same architecture in run 2
+            post = dict(cfg["post"], PQ=None)
+            best = dict(post, epoch=epoch)
+            torch.save({"model": model.state_dict(), "epoch": epoch, "post": post, "tag": tag,
+                        "aug": cfg["aug"], "encoder": cfg["encoder"], "cfg": cfg},
+                       WORK / f"best_{tag}.pt")
+        elif epoch % args.val_every == 0 or epoch == epochs:
             t1 = time.time()
             model.eval()
             probs = [predict(model, np.array(vimg[i]), device, ondisk) for i in range(len(vimg))]
@@ -559,7 +614,8 @@ def train_worker(args):
     json.dump(res, open(WORK / f"result_{tag}.json", "w"), indent=1)
     print(f"[{tag}] wrote submission_{tag}.csv: {len(rows)} rows, {np.mean(per_image):.1f} per image, "
           f"from epoch {ck['epoch']}", flush=True)
-    write_maps(model, tag, ck, device, ondisk)      # for the offline post-processing kernel
+    # for the offline post-processing kernel; an all-data model has no honest val maps
+    write_maps(model, tag, ck, device, ondisk, val=not cfg["all_data"])
 
 
 # ---------------------------------------------------------------- dump mode
@@ -577,15 +633,15 @@ def dump_worker(args):
     write_maps(model, tag, ck, device, ondisk)
 
 
-def write_maps(model, tag, ck, device, ondisk):
+def write_maps(model, tag, ck, device, ondisk, val=True):
     import shutil
     meta = json.load(open(CACHE / "meta.json"))
     _, tr_dir, _ = find_data()
     model.eval()
     root = WORK / f"dump_{tag}"
     t0 = time.time()
-    for split, folder, files in (("val", tr_dir, meta["val_files"]),
-                                 ("test", Path(meta["test_dir"]), meta["test_files"])):
+    splits = [("val", tr_dir, meta["val_files"])] if val else []
+    for split, folder, files in splits + [("test", Path(meta["test_dir"]), meta["test_files"])]:
         for view in ("plain", "d4"):
             (root / f"{split}_{view}").mkdir(parents=True, exist_ok=True)
         for f in files:
@@ -597,8 +653,9 @@ def write_maps(model, tag, ck, device, ondisk):
     # one archive per model: the CLI fetches outputs file by file
     shutil.make_archive(str(root), "tar", root)
     shutil.rmtree(root)
-    json.dump(dict(aug=tag, epoch=ck["epoch"], post=ck["post"], val_files=meta["val_files"],
-                   test_files=meta["test_files"]), open(WORK / f"dump_{tag}.json", "w"), indent=1)
+    json.dump(dict(aug=tag, epoch=ck["epoch"], post=ck["post"], val_maps=val,
+                   val_files=meta["val_files"], test_files=meta["test_files"]),
+              open(WORK / f"dump_{tag}.json", "w"), indent=1)
     print(f"[{tag}] wrote dump_{tag}.tar (checkpoint epoch {ck['epoch']})", flush=True)
 
 

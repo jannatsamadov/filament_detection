@@ -42,6 +42,21 @@ yalnız D4 TTA ardıcıl kömək edir. **Hələ submit edilməyib** — yoxlanm�
 `kernels/aug_post/out_kaggle_r2/` (`submission_ens-r50-flip_d4_rule.csv`,
 `submission_r50_d4.csv`). **Submit edildi: public 0.38 (ansambl+rule) və 0.36 (R50) — yeni ən yaxşı rəsmi bal 0.38, yer 310/1191.**
 
+**Run 3 (`filament-unet-r3`, başladı 2026-10-26 ~12:30, ~5.4 saat):**
+- `solar`: R34, v4-ün günəş ön-təlimli çəkiləri ilə (`jannatsamadov/filament-solar-pretrain`
+  private dataset-i; 276/278 tensor yüklənir, yalnız başlıq təzədir), validasiyalı.
+  Müqayisə: ImageNet-li R34 `full` — val 0.4189 / D4 0.4259. Köhnə dəlil: v4 (günəş) rəsmi
+  0.27, v2 (ImageNet) 0.29.
+- `r50all`: R50, **bütün 707 foto**, 45 epoxa, validasiya yoxdur; post-processing run 2-nin
+  R50-dən (D4: 0.75 / 0 / 350). Xəritələri yalnız test üçündür (`val_maps: false`).
+- Bitəndə: `aug_post` kernel-inin `kernel_sources`-una `jannatsamadov/filament-unet-r3`
+  əlavə et, `python kernels/build.py`, push. Post `solar`-ı skorlayır, `r50all`-u test-only
+  kimi göstərir. Yekun ansambl (məs. `r50all` + ən yaxşı validasiyalı R34) test xəritələrində
+  qurulmalıdır — bu hələ yazılmayıb.
+
+**Növbəti ideya (istifadəçidən):** şübhəli komponentləri (orta ehtimal) tam həlledicilikli
+crop-da ikinci CNN ilə yenidən yoxlamaq — öyrədilmiş keep-rule-un şəkil görən versiyası.
+
 ⚠️ `filament-aug-unet`-ə yeni versiya **push etmə** — dump onun son versiyasının
 çıxışını oxuyur. ⚠️ Lokal CPU ağır yükdə təsadüfi çökür (yaddaş qeydi
 `local-cpu-instability`) — ağır hesablama yalnız Kaggle-da.
