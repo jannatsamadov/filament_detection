@@ -25,6 +25,51 @@
 add
 Sizin təklifin adı var və işləyir — bu, self-training / EM sxemidir. Model öz təxminini etiketə çevirir, təlim davam edir, etiket yenilənir.
 
+### 1b. Fırlanmanı modelə vermək: meridian sektorları, çəkiliş vaxtı, fırlanma sürəti (2026-10-26)
+
+**Kim:** iştirakçı
+**Nə:** model hər şəkli ayrıca görür, heç nəyi yadda saxlamır. Amma Günəş fırlanır
+(öz oxu ətrafında, üstəlik Yer Günəşin ətrafında), dünənki filament bu gün başqa
+yerdədir. Diski meridianlar boyunca 12 (və ya 6) sektora bölmək, çəkiliş vaxtını və
+fırlanma sürətini modelə vermək.
+
+**Vəziyyət: SINANMAYIB.** İstifadəçi: "ideyalarda qalsın, sonra edərik".
+
+**Ölçüldü (2026-10-26) — yuxarıdakı "əvvəl yoxlanmalı" sualının cavabı.** Test
+kadrlarından neçəsinin yanında başqa kadr var (fayl adındakı vaxta görə):
+
+| pəncərə | başqa **test** kadrı | istənilən train və ya test kadrı |
+|---|---|---|
+| ±1 gün | 14/180 | 68/180 |
+| ±2 gün | 28/180 | 114/180 |
+| ±3.5 gün | 58/180 | 148/180 |
+
+İnference yalnız `test/` kadrları ilə olmalıdırsa (yuxarıda), qonşu yalnız 14–58
+test kadrında var. Hər test kadrına qonşu vermək GONG arxivi ilə mümkündür
+(`src/fetch_gong.py`, `gong_unlabelled/`-də 3810 kadr). Amma bu, inference-də xarici
+data işlətmək deməkdir — **əvvəl qaydanı dəqiqləşdirmək lazımdır** (`general.md:72`
+yalnız təlim üçün "xarici data olar" deyir).
+
+**Necə qurmaq olar.** Sektorlar fırlanmanı kobud təqrib edir: differensial
+fırlanmada sürət enlikdən asılıdır (Yerdən baxanda ekvatorda gündə ~13°, qütblərə
+doğru yavaşlayır), bir sektorun içində sabit deyil. Standart yol: qonşu kadrı hədəf
+kadrın vaxtına **piksel-piksel yenidən proyeksiya etmək** (differensial fırlanma
+qanunu; sunpy-də hazır funksiya var) və modelə **əlavə giriş kanalı** kimi vermək.
+Onda vaxt və sürət modelə ayrıca verilmir, proyeksiyanın içindədir. Model iki
+kanal görür: bu günün kadrı və bu günə çevrilmiş dünənki kadr.
+
+Bu, v3-dən fərqlidir: v3 **annotasiyanın formasını** köçürürdü (87%-i qaranlıq
+olmayan yerə düşdü, 0.29 → 0.28). Burada **şəkil** köçürülür, formanı model bu
+günün kadrından özü çıxarır. Proyeksiya xətası (11–14 px) yalnız kontekstin
+bulanıqlığıdır, etiket xətası deyil.
+
+**Hədəf:** sönük filamentlər — tək annotatorun çəkdikləri (recall 29%). Post v3-də
+GT-nin ~1/3-i heç bir namizədlə IoU > 0.5 vermir, itkinin bu hissəsi buradadır.
+
+**Əvvəl yoxlanmalı (GPU-suz):** (1) qayda inference-də GONG qonşusuna icazə verirmi;
+(2) 1 günlük proyeksiyadan sonra iki kadr filament bölgələrində nə qədər üst-üstə
+düşür (annotasiyalı 582 cütdə).
+
 
 ---
 
@@ -201,6 +246,28 @@ böyük hissəsi bu idi.
 ---
 
 ## Sınanmamış, qeyd üçün
+
+### Modelin tapdığı filamentləri etiket kimi əlavə edib yenidən öyrətmək (2026-10-26)
+
+**Kim:** iştirakçı
+**Nə:** təlimdə modelin tapdığı filamentləri annotasiya kimi götürmək, həmin
+şəkilləri augmentasiya edib modeli yenidən öyrətmək.
+
+**Ad:** pseudo-labeling / self-training. Üç variantı var və onlar fərqlidir:
+
+| variant | vəziyyət | qiymət |
+|---|---|---|
+| A. train şəkillərinə modelin əlavə tapıntılarını etiket kimi yazmaq | sınanmayıb | annotatorların çəkmədiyini öyrədir. Metrik proqnozu annotatorlarla müqayisə edir, deməli FP artır. **Tövsiyə olunmur.** |
+| B. etiket döngəsi: hər epoxa model öz etiketinə səs verir | **ÖLÜ (v5)** | 0.327 → 0.242, monoton düşüş, model "qorxaqlaşdı" (aşağıda) |
+| C. bir dəfəlik: etiketsiz kadrlarda (GONG 3810) ansamblın **əmin** komponentləri sabit etiket olur, yeni model güclü augmentasiya ilə train + bu kadrlarda öyrənir ("Noisy Student") | sınanmayıb | mümkündür, amma faydası məhduddur |
+
+**C-nin məhdudiyyəti.** Müəllim model tələbəyə yalnız artıq tapdığını öyrədir.
+Bizim itkimiz iki yerdədir: seçimdə (FP; oracle +0.08) və sönük filamentlərdə (FN).
+Pseudo-etiket heç birinə birbaşa kömək etmir — sönükləri müəllim özü tapmır.
+Kiçik qazanc gözlənilir; v5-in dərsi (eyni meyli gücləndirmək) burada da qüvvədədir.
+
+**Sınamaq istəsək:** yalnız C, bir raund, ansamblın t ≥ 0.8 komponentləri,
+val üzərində dürüst ölçmə (val kadrları pseudo-etiketə daxil edilmir). ~5 saat GPU.
 
 ### GONG arxivindən qonşu günləri çəkib sürüşdürmə ilə etiketləmək (2026-09-07)
 
