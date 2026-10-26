@@ -31,3 +31,10 @@ general.md
 
 # reference notebook is the organisers' material, not ours
 reference/
+
+# Kaggle kernel local runs (weights, caches, logs)
+kernels/*/out/
+kernels/*/out_kaggle*/
+kernels/aug_dump/run.py
+kernels/aug_post/run.py
+kernels/unet_r2/run.py

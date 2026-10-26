@@ -8,6 +8,44 @@
 
 ---
 
+## 0. İndi gedən iş (2026-10-26)
+
+**Təlim artıq Kaggle-da gedir, yerli GPU-da yox** (pulsuz 2×T4, həftədə 30 saat).
+`kernels/aug_unet/run.py`: güclü augmentasiya (`full`) və yalnız flip (`flip`)
+bir sessiyada, hər biri öz kartında, 60 epoxa (~4.7 saat). Dizayn və ölçmələr:
+`izah.md` §15.
+
+```bash
+./.venv/Scripts/kaggle.exe kernels status jannatsamadov/filament-aug-unet
+./.venv/Scripts/kaggle.exe kernels output jannatsamadov/filament-aug-unet -p kernels/aug_unet/out_kaggle
+./.venv/Scripts/python.exe kernels/aug_unet/report.py      # -> figures/aug_unet_report.png
+./.venv/Scripts/python.exe src/verify_submission.py kernels/aug_unet/out_kaggle/submission_full.csv \
+    --test-dir MAGFiLO_1.0_Kaggle_2026/test/test_images
+```
+
+Leaderboard-un 0.55–0.62 topası açıq notebook-dakı hazır CSV-dən gəlir, model
+deyil (`izah.md` §15). Tələbənin sadə modeli 0.38 alıb — bizim v2-dən (0.29) yüksək.
+
+**Kernel zənciri** (hamısı `kernels/`-də; tək-fayllı kernel-ləri `python kernels/build.py` qurur):
+
+| kernel | nə edir | mənbə |
+|---|---|---|
+| `filament-aug-unet` | run 1: `flip` vs `full`, 60 epoxa | yarış datası |
+| `filament-aug-dump` | run 1 checkpoint-lərindən bütün val/test xəritələri (plain + D4 TTA) | `filament-aug-unet` |
+| `filament-aug-post` | **yalnız CPU**: geniş grid, ansambl, öyrədilmiş keep-rule, hər variant üçün CSV | `filament-aug-dump` (+ sonra `filament-unet-r2`) |
+| `filament-unet-r2` | run 2: `union` hədəf və ResNet-50, güclü augmentasiya üstündə; xəritələri özü yazır | yarış datası |
+
+**Nəticə (2026-10-26 10:20, `izah.md` §15 sonu):** 4 model, ən yaxşı val PQ
+0.4400 (ansambl r50+flip, D4, keep-rule), ən yaxşı tək model R50+D4 0.4335
+(PQ60 0.4004). Augmentasiya, union hədəf, R50 — hamısı küy (<0.02) daxilində;
+yalnız D4 TTA ardıcıl kömək edir. **Hələ submit edilməyib** — yoxlanmış CSV-lər
+`kernels/aug_post/out_kaggle_r2/` (`submission_ens-r50-flip_d4_rule.csv`,
+`submission_r50_d4.csv`). **Submit edildi: public 0.38 (ansambl+rule) və 0.36 (R50) — yeni ən yaxşı rəsmi bal 0.38, yer 310/1191.**
+
+⚠️ `filament-aug-unet`-ə yeni versiya **push etmə** — dump onun son versiyasının
+çıxışını oxuyur. ⚠️ Lokal CPU ağır yükdə təsadüfi çökür (yaddaş qeydi
+`local-cpu-instability`) — ağır hesablama yalnız Kaggle-da.
+
 ## 1. Bir abzasda
 
 GONG Hα tam-disk şəkillərində (2048×2048) günəş filamentlərinin instance
@@ -17,34 +55,26 @@ seqmentasiyası. Metrik **Panoptic Quality**. Deadline **15 Noyabr 2026**.
 
 ---
 
-## 2. HAZIRDA: v5 təlimdədir
+## 2. v5 BİTDİ və UĞURSUZ OLDU (2026-08-24)
 
-**Fonda işləyir.** `train_v5.log`, checkpoint `checkpoints/spine_v5_last.pt`
-(hər epoxada yazılır), ən yaxşısı `spine_v5_best.pt`.
+Təlim epoxa 33-də dayandı. GPU boşdur. **Nəticə mənfidir və qətidir:**
 
-```bash
-# davam etdirmək (dayanıbsa)
-./.venv/Scripts/python.exe -u src/spine_train3.py --epochs 36 --warmup 6 \
-    --settle 6 --val-every 3 --val-limit 60 --tag spine_v5 \
-    --resume checkpoints/spine_v5_last.pt --wait-for-gpu
-```
+| epoxa | PQ | SQ | RQ | FP | FN |
+|---|---|---|---|---|---|
+| 3 | **0.3271** | 0.639 | 0.512 | 235 | 497 |
+| 15 | 0.2990 | 0.643 | 0.465 | 168 | 563 |
+| 30 | 0.2418 | 0.635 | 0.381 | 115 | 647 |
 
-**Vəziyyət (epoxa 10/36, epoxa ~60–80 dəq, qalan ~34 saat):**
+Monoton düşüş. SQ sabit — formalar yaxşı idi. RQ çökdü: model qorxaqlaşdı,
+əmin olmadığını proqnoz etməyi dayandırdı. **Ən yaxşı nöqtə self-training
+başlamazdan əvvəl idi.** Query head heç öyrənmədi (maksimum PQ 0.069).
 
-| Yol | PQ (e9) | Qeyd |
-|---|---|---|
-| Piksel (U-Net) | **0.3191** | normal qalxır; v4 0.3495-ə çatmışdı |
-| **Query head** | **0.0693** | TP 96, FP 668, FN 785 — **işləmir** |
+⚠️ Bu bal 60 **fotoşəkil** üzərindədir (881 GT); v4-ün 0.3495-i 60 **annotasiya
+dəsti** üzərindədir (466 GT). **Müqayisə edilə bilməzlər.** Rəsmi ən yaxşı bal
+hələ də **v2 = 0.29**.
 
-**Qərar nöqtəsi: epoxa 15.** Query head hələ 0.15-dən aşağıdırsa, bu data
-ölçüsündə (566 şəkil) işləməyəcək — onu atıb piksel yolu + yeni etiketlərlə
-davam etmək lazımdır.
-
-Self-training işləyir: 0.75-dən yuxarı filament sayı 2946 → 4336
-(≈1400 promote). Düzgünlüyünü yalnız validasiya balı göstərəcək.
-
-**Termal:** pik 79 °C (tavan 78). Qoruyucu dayandırır, 61–70 °C-yə qaytarır.
-Davamlı deyil, amma sərhədə toxunur.
+**Ayrılmamış:** sayğac etiketləri və self-training eyni qaçışda idi — hansının
+çökdüyü bilinmir. Növbəti təcrübə: sayğac etiketləri, self-training **olmadan**.
 
 ---
 
@@ -91,7 +121,7 @@ və həmişə "yox" deyər, etiket sıfıra sürüşər.
 | 4 | + fizika + konsensus + TTA (v2) | 0.3553 | **0.29** ← ən yaxşı |
 | 5 | + zaman yayılması (v3) | 0.3593 | 0.28 ⚠️ sınıq |
 | 6 | + Günəş ön-təlimi (v4) | 0.3790 / **0.3495** (60 dəst) | 0.27 |
-| 7 | v5 | təlimdə | — |
+| 7 | v5 (sayğac etiketləri + self-training) | 0.3271→**0.2418** düşdü | — ⚠️ ölü |
 
 **İstinad:** insan konsensusu **0.348** · boru xəttinin tavanı **0.734**.
 
@@ -164,11 +194,24 @@ cd D:\Projects\Competitions\filament_detection
 
 ## 9. Növbəti addımlar
 
-1. **Epoxa 15-də query head qərarı** (§2)
-2. v5 bitəndə: kalibrləmə → proqnoz → yoxlama → submit (**icazə ilə**)
-3. Query head işləməsə: piksel yolu + yeni etiketlərlə davam, sonra
-   **YOLOv8-seg** müstəqil yol kimi (kod yoxdur, 2–3 gün iş)
-4. Sınanmamış: dərin qatda attention; barb başlığı
+1. **Sayğac etiketləri, self-training olmadan** — v5-də hansının çökdüyünü ayırmaq
+   üçün yeganə yol (§2)
+2. **YOLOv8-seg** müstəqil yol kimi (kod yoxdur, 2–3 gün iş). RQ 0.94 hədəfinə
+   yeganə açıq istiqamət — anchor-free olduğu üçün Mask R-CNN-in anchor problemi
+   ona aid deyil
+3. **GONG qonşu günləri + sürüşdürmə ilə etiketləmək** (istifadəçi ideyası,
+   `IDEAS.md`). Formanı köçürmək ölüdür (v3); yalnız **toxum kimi** işlədib formanı
+   yeni kadrdan çıxarmaq sınanmayıb. Əvvəlcə GPU-suz ölçmə: hər iki günü
+   annotasiyalı 582 cütdə proyeksiya→yapışdır→seqment nəticəsinin IoU>0.5 payı
+4. Sınanmamış: dərin qatda attention; barb başlığı; xirallik başlığı
+5. Submit lazım olsa: **v2** (`spine_v2_best.pt`, §5) — hələ də ən yaxşısıdır
+
+## 9b. Konfrans (2026-09-08/09)
+
+- Tezis göndərilib: `publication/Abstract_Samadov_Dzhalilov_EN.docx`
+- Slaydlar: `publication/slides/index.html` (reveal.js, hər şey lokal vendored).
+  PDF üçün `index.html?print-pdf` → Ctrl+P → yataq A4, kənarlar yox.
+- Slayd şəkilləri: `src/slide_figures.py` (v2 modeli ilə, ~3 dəq GPU)
 
 ---
 

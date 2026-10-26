@@ -162,6 +162,29 @@ Model isə qaranlıqlıqdan **daha yaxşı** filament detektorudur — konsensus
 | Səs promote etmək (yalnız annotasiyalarla) | 2.5× təsadüfdən yuxarı, amma cəmi 11 etiket | **siqnal var, həcm yoxdur** |
 | Instance etibar balı (əl ilə düzəldilmiş əlamətlər) | 0.3367 → 0.3415, küy 0.03 | **sıfır qazanc** |
 | Günəş şəkillərində ön-təlim (v4) | validasiya 0.355 → 0.379 | rəsmi **0.29 → 0.27** |
+| **Self-training — model öz etiketlərinə səs versin (v5)** | 33 epoxa, 60 şəkil | **0.3271 → 0.2418, monoton düşüş** |
+| **Query head (Mask2Former tipli, Hungarian matching)** | 12 epoxa | PQ **0.069 maksimum**, FP 668 — öyrənmədi |
+
+### v5 self-training niyə öldü (2026-08-24, təlim e33-də dayandı)
+
+| epoxa | PQ | SQ | RQ | FP | FN |
+|---|---|---|---|---|---|
+| 3 | **0.3271** | 0.639 | 0.512 | 235 | 497 |
+| 15 | 0.2990 | 0.643 | 0.465 | 168 | 563 |
+| 30 | 0.2418 | 0.635 | 0.381 | 115 | 647 |
+
+**SQ heç tərpənmədi** (0.64) — formalar həmişə yaxşı idi. **RQ çökdü.** FP azaldı,
+FN artdı: model getdikcə daha **qorxaq** oldu və əmin olmadığı heç nəyi proqnoz
+etməməyə başladı. Etiket sayğacında 0.75-i keçən filament sayı 2946 → 4616
+qalxsa da, model daha **az** tapdı.
+
+**Səbəb:** self-training modelin mövcud meylini gücləndirir. Bu qədər qeyri-müəyyən
+etiketlə həmin meyl **susmağa** doğrudur. Ən yaxşı nöqtə epoxa 3 idi — yəni
+self-training başlamazdan əvvəl.
+
+**Ayrılmamış sual:** etiket etibarlılığı sxemi (sayğac, 0.40/0.50/0.66/0.80/0.90/1.00)
+ilə self-training döngəsi eyni qaçışda idi. Çökən hansıdır — bilmirik. Növbəti
+təcrübə: sayğac etiketləri ilə **self-training olmadan** öyrətmək.
 
 **Ən vacib dərs:** son üç submitdə **validasiya qalxdı, rəsmi bal düşdü**. 25 şəkillik validasiya artıq etibarsızdır və ona görə optimallaşdırmaq zərərlidir.
 
@@ -178,6 +201,69 @@ böyük hissəsi bu idi.
 ---
 
 ## Sınanmamış, qeyd üçün
+
+### GONG arxivindən qonşu günləri çəkib sürüşdürmə ilə etiketləmək (2026-09-07)
+
+**İdeya (istifadəçidən).** Annotasiya olunmuş şəkillərin yaxın tarixlərindəki
+GONG kadrlarını arxivdən çəkmək, differensial fırlanma ilə annotasiyaları o
+günlərə proyeksiya etmək və beləcə etiketsiz kadrları da etiketləmək — data
+augmentation kimi.
+
+**Qaydaya uyğundur.** `general.md:72`: xarici **data** olar, xarici **ground
+truth** olmaz. Burada etiketlər bizim öz MAGFiLO annotasiyalarımızdan həndəsə
+ilə çıxarılır, kənardan GT gətirilmir. `src/fetch_gong.py` artıq yazılıb və
+işləyir (3772 kadr onunla çəkilib), yəni infrastruktur hazırdır, GPU lazım deyil.
+
+**İdeyanı iki hissəyə ayırmaq lazımdır — biri ölüdür, biri deyil.**
+
+**A. Formanı olduğu kimi köçürmək — ÖLÜ, artıq sınanıb.** Bu, v3-ün özüdür.
+Proyeksiya xətası **11–14 px**, filament eni **8.2 px** → köçürülmüş poliqon
+həqiqi filamentlə demək olar **sıfır** örtüşür, IoU 0.5-i keçmir, PQ-da həm FN
+həm FP sayılır. Ölçüldü: köçürülmüş konturların **87%-i qaranlıq olmayan**
+piksellərə düşür, rəsmi bal 0.29 → 0.28. Belə etiketlərlə öyrətmək modelə
+filamentin **olduğu yerdən 14 px kənarda** olduğunu öyrədir — faydasız yox,
+zərərlidir.
+
+**B. Proyeksiyanı yalnız *toxum* kimi işlətmək, formanı yeni günün şəklindən
+çıxarmaq — SINANMAMIŞ, yeganə açıq yol.** Yəni: spine-i proyeksiya et → ±20 px
+lokal axtarışla ən qaranlıq silsiləyə "yapışdır" → maskanı yapışdırılmış
+spine-dan yeni kadrın öz parlaqlığı ilə böyüt. Forma nə dünənin poliqonundan,
+nə modelin öz təxminindən gəlir — deməli nə v3-ün, nə v5 self-training-in
+uğursuzluğunu miras almır.
+
+**Diqqət — burada incə fərq var.** `check_lookhere.py` qaranlıqlıq meyarını
+sınadı və **ayırd etmədi** (nəzarət 67% vs əsl 76%, ±20 px). Amma o test
+başqa sual verirdi: *"burada ümumiyyətlə filament varmı?"* Bu ideya isə
+soruşur: *"filamentin burada olduğunu bilirik (dünən ekspert çəkib) — dəqiq
+harada?"* **Detektor kimi işləməyən meyar lokalizator kimi işləyə bilər.**
+Bu ayrı sualdır və ölçülməyib.
+
+**Qərar verən təcrübə — GPU lazım deyil, bir neçə saat iş.** Hər iki günü
+annotasiyalı olan cütlərdə (582 cüt var, 27.8% əlaqələnir):
+1. 1-ci günün annotasiyasını 2-ci günə proyeksiya et,
+2. ±20 px lokal axtarışla ən qaranlıq silsiləyə yapışdır,
+3. yenidən seqmentləşdir,
+4. nəticəni 2-ci günün **həqiqi** annotasiyası ilə müqayisə et — IoU > 0.5
+   payı nədir?
+
+Əgər bu pay aşağıdırsa ideya ölüdür və bunu **heç nə öyrətmədən** bilirik.
+Yüksəkdirsə, metod istifadə oluna bilən etiket istehsal edir.
+
+**Ən ciddi etiraz — seçmə meyli (selection bias).** Filamentin proyeksiya
+oluna bilməsi üçün o, **növbəti günə qalmalı və çəkilmiş olmalıdır**. Uzunömürlü,
+iri, aydın filamentlər — yəni modelin **artıq tapdıqları** (konsensus recall
+**71%**). Qısaömürlü, sönük, mübahisəli olanlar — yəni **buraxdıqlarımız**
+(tək annotator recall **29%**) — məhz proyeksiya olunmayanlardır.
+
+Deməli bu augmentation **asan nümunələri çoxaldır, çətinləri yox.** Bizim
+itkimiz SQ-də (0.64, formalar yaxşıdır) deyil, RQ-dədir (0.45, tapa bilmirik) —
+və tapa bilmədiklərimiz tam olaraq bu metodun gətirə bilmədikləridir.
+
+**Nəticə:** B variantı ucuzdur və sınanmalıdır, amma gözlənti təvazökar
+olmalıdır. Yuxarıdakı 4 addımlıq ölçmə hər şeydən əvvəl edilməlidir —
+əgər IoU payı aşağıdırsa, kadr çəkməyə də dəyməz.
+
+---
 
 - **YOLOv8-seg.** Mask R-CNN uğursuzluğuna əsaslanaraq kənara qoyulmuşdu. O əsas
   **yanlışdır**: YOLO-seg anchor-free işləyir, qutu-IoU uyğunlaşmasından asılı
