@@ -103,6 +103,21 @@ public ~0.38–0.39, 0.40 yox. Açıq sual: 1400 namizəd azdırmı (mərhələ 
 Ucuz yoxlama: öyrənmə əyrisi (namizədlərin 25/50/100%-i ilə OOF), CPU. Test CSV-ləri:
 `kernels/keep_cnn/out_kaggle/submission_keepcnn_*.csv`. **Submit edildi** (CNN+GBM, r50all ilə): **public 0.38** — ən yaxşı ilə bərabər.
 
+**Run 4 (`filament-unet-r4`, 2026-10-26 21:45 – 10-27 03:08 UTC): `heavy` augmentasiya** — `full` üstəgəl
+miqyas 0.92–1.08, yumşaq warp (≤4 px), qeyri-bərabər işıq, nazik bulud, anizotrop bulanıqlıq, daha geniş
+kontrast/gamma/küy/JPEG, hər addım daha tez-tez. Plain val (kernel grid):
+
+| model | ən yaxşı PQ | PQ60 | son 4 val |
+|---|---|---|---|
+| R34 `heavy` | 0.4191 | 0.3891 | 0.4159 |
+| R34 `full` (r1) | 0.4189 | 0.3829 | 0.4156 |
+| R50 `r50heavy` | 0.4157 | 0.3873 | 0.4136 |
+| R50 `r50` (r2) | 0.4248 | 0.3852 | 0.4218 |
+
+**Daha çox augmentasiya kömək etmir** (R34 eyni, R50 −0.009). r1 `flip` vs `full` ilə birlikdə:
+augmentasiya darboğaz deyil. **Ölü.** Çıxış `kernels/unet_r4/out_kaggle/`; xəritələr `dump_*.tar` Kaggle-da.
+Post-a (D4/ansambl) qoşulmayıb. Submit edilməyib.
+
 **Növbəti ideya (istifadəçidən):** şübhəli komponentləri (orta ehtimal) tam həlledicilikli
 crop-da ikinci CNN ilə yenidən yoxlamaq — öyrədilmiş keep-rule-un şəkil görən versiyası.
 
