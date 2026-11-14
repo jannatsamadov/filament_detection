@@ -200,8 +200,8 @@ def matched_iou(lab, area, ids, sets):
             for j, it in zip(u.tolist(), n.tolist()):
                 if j in pos:
                     iou = it / (int(c.sum()) + int(area[j]) - it)
-                    if iou > 0.5:
-                        Y[pos[j], s_i] = iou
+                    if iou > 0.5:              # overlapping masks of one set: keep the best match
+                        Y[pos[j], s_i] = max(Y[pos[j], s_i], iou)
     return Y
 
 

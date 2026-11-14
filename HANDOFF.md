@@ -118,6 +118,10 @@ kontrast/gamma/küy/JPEG, hər addım daha tez-tez. Plain val (kernel grid):
 augmentasiya darboğaz deyil. **Ölü.** Çıxış `kernels/unet_r4/out_kaggle/`; xəritələr `dump_*.tar` Kaggle-da.
 Post-a (D4/ansambl) qoşulmayıb. Submit edilməyib.
 
+**Səhv bölgüsü (2026-11-01, `izah.md` §17, `figures/error_breakdown.png`).** FN-lərin yarısı və FP-lərin 43%-i forma səhvidir. 32 parametrlik kontur hovuzu: oracle 0.5775, öyrədilmiş seçim 0.4384 (bir parametr 0.4464) — **ölü**. Keep-rule 17 əlamətlə nested 0.4450, 10 əlamətlə 0.4389. Köhnə notebook başlıqları Dice dövrünə aiddir (metrik 7 avqustda dəyişib); "0.46" PQ ilə 0.038-dir.
+
+**K-fold (`filament-unet-r5`, `-r6`, 2026-11-01 02:26 AST, ~5.4 saat).** `r50`-nin eyni reseptilə fold 1–4. Fold 0 = run 2-nin `r50`-si. Çıxış: `dump_r50f{1..4}.tar` (hər biri öz fold-unun val xəritələri + 180 test). Bitəndə: 707 OOF PQ, 5× namizədlə keep-rule, 5 fold test ansamblı, CSV-lər `verify_submission.py`-dan keçməlidir. **`candidate_pool.py` və post kernel fold-ları hələ bilmir**, ground truth-u fold üzrə yükləmək lazımdır.
+
 **Növbəti ideya (istifadəçidən):** şübhəli komponentləri (orta ehtimal) tam həlledicilikli
 crop-da ikinci CNN ilə yenidən yoxlamaq — öyrədilmiş keep-rule-un şəkil görən versiyası.
 

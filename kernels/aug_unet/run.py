@@ -33,7 +33,8 @@ import os
 from pathlib import Path
 
 ON_KAGGLE = Path("/kaggle/working").exists()
-if not ON_KAGGLE:
+LOCAL_GPU = not ON_KAGGLE and os.environ.get("FIL_LOCAL_GPU") == "1"   # fan repaired 2026-11; opt in per script
+if not ON_KAGGLE and not LOCAL_GPU:
     # "-1", not "": on Windows an empty value deletes the variable and every GPU
     # stays visible -- which is how the first local smoke test ran on the card
     os.environ["CUDA_VISIBLE_DEVICES"] = "-1"     # before torch is imported
@@ -53,7 +54,7 @@ from pycocotools import mask as mu
 from torchvision.models import resnet34, resnet50
 
 cv2.setNumThreads(1)
-if not ON_KAGGLE and torch.cuda.is_available():
+if not ON_KAGGLE and not LOCAL_GPU and torch.cuda.is_available():
     sys.exit("refusing to run: the local GPU is visible (broken fan) -- this script trains only on Kaggle")
 
 # Edit these, not the command line: a Kaggle script kernel runs without arguments.
@@ -69,9 +70,12 @@ if not ON_KAGGLE:                            # local checks may set them from th
 FULL = 2048
 CX = CY = 1024.0
 R_DISK = 904.0
+GEO_CH = 3            # extra input channels of a `geo` arm: sin(latitude), longitude from the CM, mu
 HERE = Path(__file__).resolve().parent
 WORK = Path("/kaggle/working") if ON_KAGGLE else HERE / "out"
-CACHE = Path("/tmp/fil") if ON_KAGGLE else HERE / "out" / "cache"     # ~5 GB, not kept
+CACHE_ROOT = Path("/tmp/fil") if ON_KAGGLE else HERE / "out" / "cache"     # ~5 GB per fold, not kept
+CACHE = CACHE_ROOT
+FOLD = 0
 # The arms of a run, one per GPU. Each is a full training; only what is listed
 # differs from ARM_DEFAULTS. Run 1 (2026-10-26) was flip vs full: what the
 # augmentation is worth.
@@ -92,6 +96,20 @@ RUNS = {
     # run 4: more kinds of augmentation, and each applied more often ("heavy"),
     # against run 1's `full` (R34) and run 2's `r50`
     "r4": {"heavy": dict(aug="heavy"), "r50heavy": dict(aug="heavy", encoder="resnet50", epochs=45)},
+    # runs 5 and 6: run 2's `r50` on the other four folds. With it, every photograph
+    # gets an out-of-fold map: five models for test, five times the candidates for
+    # the keep-rule, and validation on 707 photographs instead of 141
+    "r5": {"r50f1": dict(encoder="resnet50", epochs=45, fold=1), "r50f2": dict(encoder="resnet50", epochs=45, fold=2)},
+    "r6": {"r50f3": dict(encoder="resnet50", epochs=45, fold=3), "r50f4": dict(encoder="resnet50", epochs=45, fold=4)},
+    # runs 7 and 8: run 1's `full` (R34) on the same four folds. With both, every
+    # photograph has an out-of-fold map from two architectures, so the ensemble and
+    # its keep-rule can be tuned out-of-fold instead of on fold 0 alone
+    "r7": {"r34f1": dict(fold=1), "r34f2": dict(fold=2)},
+    "r8": {"r34f3": dict(fold=3), "r34f4": dict(fold=4)},
+    # run 9: where each pixel sits on the solar sphere, as three more input channels
+    # (geo_channels), on R34 folds 0 and 1 -- against run 1's `full` and run 7's
+    # `r34f1`, which differ from these in nothing else
+    "r9": {"r34geo": dict(geo=True), "r34geof1": dict(geo=True, fold=1)},
 }
 RUN = "r1"                                   # kernels/build.py sets this per kernel
 ARMS = RUNS[RUN]
@@ -115,13 +133,72 @@ def find_data():
     return ann, tr, te
 
 
-def photograph_split(fname, val_frac=0.2, seed=0):
-    """Grouped by photograph, identical to src/spine_data.make_split."""
+def set_fold(fold):
+    """Each fold keeps its own decoded frames; fold 0 is the split every earlier run used."""
+    global CACHE, FOLD
+    FOLD = fold
+    CACHE = CACHE_ROOT / f"fold{fold}" if fold else CACHE_ROOT
+
+
+def photograph_split(fname, fold=0, n_folds=5, seed=0):
+    """Grouped by photograph; fold 0 is identical to src/spine_data.make_split."""
     files = sorted(set(fname.values()))
     rng = random.Random(seed)
     rng.shuffle(files)
-    n_val = int(round(len(files) * val_frac))
-    return sorted(files[n_val:]), sorted(files[:n_val])
+    n_val = int(round(len(files) / n_folds))
+    a, b = fold * n_val, (fold + 1) * n_val if fold < n_folds - 1 else len(files)
+    return sorted(files[:a] + files[b:]), sorted(files[a:b])
+
+
+def b0_deg(fname):
+    """Heliographic latitude of the disk centre, in degrees, at the time in the file name.
+
+    Meeus ch. 29, the same series as src/solar_ephemeris.solar_angles. P is not
+    needed: the frames are already turned solar-north-up. Measured 2026-11-09 by
+    carrying the annotated filaments of 287 photograph pairs (7 h - 2 d apart) to
+    the later time: with P applied 3.0% land within 15 px of a filament drawn
+    there, without it 18.1% -- and only with B0 entering as it does here.
+    """
+    from datetime import datetime
+    t = datetime.strptime(Path(fname).stem[:14], "%Y%m%d%H%M%S")
+    jd = 2451545.0 + (t - datetime(2000, 1, 1, 12)).total_seconds() / 86400.0
+    d = math.pi / 180.0
+    k = 73.6667 + 1.3958333 * (jd - 2396758.0) / 36525.0     # node of the solar equator
+    tau = jd - 2451545.0
+    g = (357.52911 + 0.9856003 * tau) % 360.0
+    lam = 280.46646 + 0.9856474 * tau + 1.914602 * math.sin(g * d) + 0.019993 * math.sin(2 * g * d)
+    return math.asin(math.sin((lam - k) * d) * math.sin(7.25 * d)) / d
+
+
+_GRID = {}
+
+
+def geo_channels(g, device):
+    """Where every pixel sits on the solar sphere, for a batch of (augmented) frames.
+
+    g is (N, 5): the 2x2 map from an output pixel's disk offset (image axes, in
+    units of the radius) back to the source frame's, then B0 in degrees. Returns
+    (N, 3, H, W): sin(latitude), longitude from the central meridian / 90 deg,
+    and mu = cos(angle from disk centre); all zero off the disk. Computed on the
+    device from the map rather than warped, so it is exact under any rotation and
+    mirror and costs nothing.
+    """
+    key = str(device)
+    if key not in _GRID:
+        c = (torch.arange(FULL, device=device, dtype=torch.float32) - CX) / R_DISK
+        _GRID[key] = (c[None, :].expand(FULL, FULL), c[:, None].expand(FULL, FULL))
+    u, v = _GRID[key]
+    g = g.to(device=device, dtype=torch.float32)
+    s = g[:, :4].reshape(-1, 4, 1, 1)
+    dx = s[:, 0] * u + s[:, 1] * v               # west, in the source frame
+    dy = -(s[:, 2] * u + s[:, 3] * v)            # north: image y grows downward
+    rho2 = dx * dx + dy * dy
+    on = (rho2 < 1.0).float()
+    z = torch.sqrt(torch.clamp(1.0 - rho2, min=0.0))
+    b = torch.deg2rad(g[:, 4]).reshape(-1, 1, 1)
+    sinlat = torch.clamp(dy * torch.cos(b) + z * torch.sin(b), -1.0, 1.0)
+    lon = torch.atan2(dx, z * torch.cos(b) - dy * torch.sin(b)) / (math.pi / 2)
+    return torch.stack([sinlat * on, lon * on, z * on], 1)
 
 
 def ann_mask(a):
@@ -141,7 +218,7 @@ def prepare(smoke, with_train=True):
     for sid, f in fname.items():
         sets_of[f].append(sid)
 
-    train_files, val_files = photograph_split(fname)
+    train_files, val_files = photograph_split(fname, FOLD)
     test_files = sorted(p.name for p in te_dir.glob("*.jpeg"))
     if smoke:
         # off Kaggle, enough validation frames that some carry several annotators
@@ -224,9 +301,17 @@ def log_uniform(lo, hi):
     return math.exp(random.uniform(math.log(lo), math.log(hi)))
 
 
+# output-to-source map of the current sample's rotation and mirrors, in image axes;
+# Frames resets it per sample and a `geo` arm hands it to geo_channels
+_AUG_S = np.eye(2)
+
+
 def geometric(im, ma):
     """Any-angle rotation about the disk centre, then the two mirrors."""
+    global _AUG_S
     M = cv2.getRotationMatrix2D((CX, CY), random.uniform(0.0, 360.0), 1.0)
+    c, s = M[0, 0], M[0, 1]
+    _AUG_S = _AUG_S @ np.array([[c, -s], [s, c]])
     bg = float(np.median(im[:48, :48]))
     im = cv2.warpAffine(im, M, (FULL, FULL), flags=cv2.INTER_LINEAR,
                         borderMode=cv2.BORDER_CONSTANT, borderValue=bg)
@@ -330,10 +415,13 @@ def augment_heavy(im, ma):
 
 
 def augment_flip(im, ma):
+    global _AUG_S
     if random.random() < 0.5:
         im, ma = im[:, ::-1], ma[:, ::-1]
+        _AUG_S = _AUG_S @ np.diag([-1.0, 1.0])
     if random.random() < 0.5:
         im, ma = im[::-1], ma[::-1]
+        _AUG_S = _AUG_S @ np.diag([1.0, -1.0])
     return np.ascontiguousarray(im), np.ascontiguousarray(ma)
 
 
@@ -345,9 +433,11 @@ class Frames(torch.utils.data.Dataset):
     """target: "soft" = the fraction of annotators who drew each pixel;
     "union" = drawn by anyone, which a single-annotator test set rewards."""
 
-    def __init__(self, n, aug, target="soft", n_val=0):
-        """n training frames, then n_val validation frames appended (all-data arm)."""
+    def __init__(self, n, aug, target="soft", n_val=0, b0=None):
+        """n training frames, then n_val validation frames appended (all-data arm).
+        b0: per frame, in that order, for the geometry a `geo` arm adds."""
         self.n, self.n_val, self.aug, self.target = n, n_val, aug, target
+        self.b0 = b0 if b0 is not None else [0.0] * (n + n_val)
         self.img = self.msk = None
 
     def __len__(self):
@@ -366,8 +456,11 @@ class Frames(torch.utils.data.Dataset):
             im, ma = np.array(self.vimg[i - self.n]), np.array(self.vmsk[i - self.n])
         if self.target == "union":
             ma = np.where(ma > 0, 255, 0).astype(np.uint8)
+        global _AUG_S
+        _AUG_S = np.eye(2)
         im, ma = {"full": augment_full, "heavy": augment_heavy}.get(self.aug, augment_flip)(im, ma)
-        return to_input(im)[None], torch.from_numpy(ma).float().div_(255.0)[None]
+        g = torch.tensor([*_AUG_S.ravel(), self.b0[i]], dtype=torch.float32)
+        return to_input(im)[None], torch.from_numpy(ma).float().div_(255.0)[None], g
 
 
 # ---------------------------------------------------------------- model
@@ -391,13 +484,17 @@ class UNet(nn.Module):
     response to a grey image as repeating it three times, at a third of the work.
     """
 
-    def __init__(self, encoder="resnet34", pretrained=True, width=(256, 128, 64, 32, 16)):
+    def __init__(self, encoder="resnet34", pretrained=True, width=(256, 128, 64, 32, 16), in_ch=1):
         super().__init__()
         fn, ch = ENCODERS[encoder]
         net = fn(weights="DEFAULT" if pretrained else None)
-        conv1 = nn.Conv2d(1, 64, 7, stride=2, padding=3, bias=False)
+        self.in_ch = in_ch
+        conv1 = nn.Conv2d(in_ch, 64, 7, stride=2, padding=3, bias=False)
         with torch.no_grad():
-            conv1.weight.copy_(net.conv1.weight.sum(dim=1, keepdim=True))
+            # extra channels (geometry) start at zero weight: the first step is the
+            # grey-only model, and the geometry enters only as far as it helps
+            conv1.weight.zero_()
+            conv1.weight[:, :1].copy_(net.conv1.weight.sum(dim=1, keepdim=True))
         self.stem = nn.Sequential(conv1, net.bn1, net.relu)
         self.pool = net.maxpool
         self.enc1, self.enc2, self.enc3, self.enc4 = net.layer1, net.layer2, net.layer3, net.layer4
@@ -536,15 +633,24 @@ def fmt(device):
     return torch.channels_last if device.type == "cuda" else torch.contiguous_format
 
 
+def model_in_ch(cfg):
+    return 1 + GEO_CH if cfg.get("geo") else 1
+
+
 @torch.no_grad()
-def predict(model, im_u8, device, ondisk, tta="plain"):
+def predict(model, im_u8, device, ondisk, tta="plain", b0=None):
     """Filament probability as uint8.
 
     tta: "plain", "flip4" (the four mirrors) or "d4" (mirrors with and without a
     transpose -- all eight symmetries of the square, each mapped back). The disk
-    is centred, so every one of them keeps it in place.
+    is centred, so every one of them keeps it in place. A `geo` model also needs
+    the frame's B0; its geometry channels are flipped with the image.
     """
     x = to_input(im_u8)[None, None].to(device)
+    if getattr(model, "in_ch", 1) > 1:
+        if b0 is None:
+            raise ValueError("a geo model needs the frame's B0")
+        x = torch.cat([x, geo_channels(torch.tensor([[1.0, 0.0, 0.0, 1.0, b0]]), device)], 1)
     flips = ([], [3], [2], [2, 3]) if tta in ("flip4", "d4") else ([],)
     views = [(t, d) for t in ((False, True) if tta == "d4" else (False,)) for d in flips]
     acc = 0.0
@@ -564,6 +670,7 @@ def predict(model, im_u8, device, ondisk, tta="plain"):
 def train_worker(args):
     tag = args.arm
     cfg = {**ARM_DEFAULTS, **ARMS[tag]}
+    set_fold(cfg.get("fold", 0))                 # before the loader forks its workers
     epochs = args.epochs if SMOKE else int(cfg.get("epochs", args.epochs))   # smoke caps every arm
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     meta = json.load(open(CACHE / "meta.json"))
@@ -578,14 +685,19 @@ def train_worker(args):
     ondisk = torch.from_numpy(ondisk_np).to(device)
     valid = ondisk[None, None]
 
-    model = UNet(cfg["encoder"], pretrained=cfg["init"] == "imagenet")
+    geo = bool(cfg.get("geo"))
+    if geo and cfg["aug"] not in ("full", "flip"):
+        sys.exit(f"[{tag}] geo channels follow `full` and `flip` only; `heavy` warps without telling them")
+    model = UNet(cfg["encoder"], pretrained=cfg["init"] == "imagenet", in_ch=model_in_ch(cfg))
     if cfg["init"] == "solar":
         load_solar(model, tag)
     model = model.to(device).to(memory_format=fmt(device))
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     n_val_train = len(meta["val_files"]) if cfg["all_data"] else 0
+    train_b0 = [b0_deg(f) for f in meta["train_files"] + (meta["val_files"] if n_val_train else [])]
+    val_b0 = [b0_deg(f) for f in meta["val_files"]]
     loader = torch.utils.data.DataLoader(
-        Frames(n_train, cfg["aug"], cfg["target"], n_val_train),
+        Frames(n_train, cfg["aug"], cfg["target"], n_val_train, b0=train_b0),
         batch_size=int(cfg.get("batch", args.batch)),
         shuffle=True, drop_last=True,
         num_workers=args.workers, pin_memory=device.type == "cuda",
@@ -602,8 +714,11 @@ def train_worker(args):
         t0 = time.time()
         model.train()
         tot = bce_s = dice_s = 0.0
-        for x, y in loader:
-            x = x.to(device, non_blocking=True).contiguous(memory_format=fmt(device))
+        for x, y, g in loader:
+            x = x.to(device, non_blocking=True)
+            if geo:
+                x = torch.cat([x, geo_channels(g, device)], 1)
+            x = x.contiguous(memory_format=fmt(device))
             y = y.to(device, non_blocking=True)
             with torch.autocast(device.type, dtype=torch.float16, enabled=device.type == "cuda"):
                 logit = model(x)
@@ -632,7 +747,7 @@ def train_worker(args):
         elif epoch % args.val_every == 0 or epoch == epochs:
             t1 = time.time()
             model.eval()
-            probs = [predict(model, np.array(vimg[i]), device, ondisk) for i in range(len(vimg))]
+            probs = [predict(model, np.array(vimg[i]), device, ondisk, b0=val_b0[i]) for i in range(len(vimg))]
             grid = sweep(probs, gt)
             top = dict(grid[0], epoch=epoch, sec=time.time() - t1)
             vals.append(top)
@@ -663,7 +778,7 @@ def train_worker(args):
     rows, per_image = [], []
     for f in meta["test_files"]:
         im = cv2.imread(str(Path(meta["test_dir"]) / f), cv2.IMREAD_GRAYSCALE)
-        lab, area = components(predict(model, im, device, ondisk), post["thresh"], post["merge"])
+        lab, area = components(predict(model, im, device, ondisk, b0=b0_deg(f)), post["thresh"], post["merge"])
         ids = [j for j in range(1, len(area)) if area[j] >= post["min_area"]]
         for n_, j in enumerate(ids, 1):
             r = mu.encode(np.asfortranarray((lab == j).astype(np.uint8)))
@@ -688,7 +803,8 @@ def dump_worker(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ck = torch.load(args.ckpt, map_location=device, weights_only=False)
     tag = ck.get("tag", ck["aug"])                 # run 1 checkpoints carry only "aug"
-    model = UNet(ck.get("encoder", "resnet34"), pretrained=False).to(device).to(memory_format=fmt(device))
+    model = UNet(ck.get("encoder", "resnet34"), pretrained=False,
+                 in_ch=model_in_ch(ck.get("cfg", {}))).to(device).to(memory_format=fmt(device))
     model.load_state_dict(ck["model"]); model.eval()
     yy, xx = np.mgrid[:FULL, :FULL]
     ondisk = torch.from_numpy((((xx - CX) ** 2 + (yy - CY) ** 2) <= (R_DISK * 0.995) ** 2)
@@ -710,7 +826,7 @@ def write_maps(model, tag, ck, device, ondisk, val=True):
         for f in files:
             im = cv2.imread(str(folder / f), cv2.IMREAD_GRAYSCALE)
             for view in ("plain", "d4"):
-                p = predict(model, im, device, ondisk, tta=view)
+                p = predict(model, im, device, ondisk, tta=view, b0=b0_deg(f))
                 cv2.imwrite(str(root / f"{split}_{view}" / f"{Path(f).stem}.png"), p)
         print(f"[{tag}] {split}: {len(files)} frames, {time.time() - t0:.0f}s", flush=True)
     # one archive per model: the CLI fetches outputs file by file
@@ -847,7 +963,9 @@ def main():
           f"cpus {os.cpu_count()}  smoke {SMOKE}", flush=True)
     if ON_KAGGLE:
         subprocess.call(["nvidia-smi", "-L"])
-    prepare(SMOKE)
+    for fold in sorted({arm.get("fold", 0) for arm in ARMS.values()}):
+        set_fold(fold)
+        prepare(SMOKE)
 
     base = [sys.executable, str(Path(__file__).resolve()), "--worker",
             "--epochs", str(args.epochs), "--batch", str(args.batch), "--lr", str(args.lr),
