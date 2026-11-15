@@ -59,8 +59,20 @@ if IDEAS.exists():
                        ("context", "RF: + neighbours' predictions (auto-context)")):
         DUMPS[f"i_{arm}"] = (IDEAS, arm)
         MODELS[shown] = ((f"i_{arm}",), (1,))
+# the user's neighbour table (aug_unet/pixel_nb.py, 11-14): regression, classifier, classifier + rotation
+for tar, arms in ((KER / "pixel_nb/out_kaggle/dump_nb.tar",
+                   (("ctrl", "RF reg: 35 columns, same rows (control)"), ("nb", "RF reg: + 12 px neighbours (1358 col.)"),
+                    ("nb_count", "RF reg: neighbours, target 0.45/0.65/0.95"))),
+                  (KER / "pixel_nbc/out_kaggle/dump_nbc.tar",
+                   (("ctrlc", "RF cls: 35 columns, same rows (control)"), ("nbc", "RF cls: + 12 px neighbours (1358 col.)"))),
+                  (KER / "pixel_nbr/out_kaggle/dump_nbcr.tar",
+                   (("nbcr", "RF cls: neighbours + rotation (2056 col.)"),))):
+    if tar.exists():
+        for arm, shown in arms:
+            DUMPS[f"n_{arm}"] = (tar, arm)
+            MODELS[shown] = ((f"n_{arm}",), (1,))
 T_FIXED = 0.5
-BAND = 16                                    # px at 2048: the "hard" pixels are expert pixels and those this close to them
+BAND = 16                                   # px at 2048: the "hard" pixels are expert pixels and those this close to them
 
 
 class Dumps:

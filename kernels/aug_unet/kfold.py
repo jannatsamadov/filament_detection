@@ -216,14 +216,83 @@ QSEG_W = 1.0                                  # one member of six in ens0; its s
 
 
 def mix_dump(d, name, members, extra, w, split, stems, view=VIEW):
-    """d/dump/<name>/<split>_<view>/: the members' mean with `extra` (a '<model>/<view>') at weight w."""
+    """d/dump/<name>/<split>_<view>/: the members' mean with `extra` (a '<model>/<view>', or a
+    tuple of them) at weight w each. One extra gives exactly the v8 maps (the 0.39 file's)."""
+    extras = (extra,) if isinstance(extra, str) else tuple(extra)
     out = d / "dump" / name / f"{split}_{view}"
     out.mkdir(parents=True, exist_ok=True)
     for s in stems:
         acc = sum(P.load_map(d, f"{m}/{view}", split, s).astype(np.float32) for m in members)
-        acc = acc + w * P.load_map(d, extra, split, s).astype(np.float32)
-        cv2.imwrite(str(out / f"{s}.png"), np.round(acc / (len(members) + w)).astype(np.uint8))
+        for e in extras:
+            acc = acc + w * P.load_map(d, e, split, s).astype(np.float32)
+        cv2.imwrite(str(out / f"{s}.png"), np.round(acc / (len(members) + w * len(extras))).astype(np.uint8))
     return f"{name}/{view}"
+
+
+# ---- 11-15: which Qwen members the map should carry. "q" is the submitted 0.39 file's map
+# (and so the pipeline check: its CSV must come out byte for byte the same); the others add
+# the no-pretraining arm, or swap in / add the arms continued for 9 more epochs
+# (filament-qwen-seg2). Each Qwen map is one member next to fold 0's five U-Nets, two next
+# to the ten. A variant whose dump is not attached is skipped.
+QSEG2, QSEG2_FT = "qwenseg_pre2/plain", "qwenseg_ft2/plain"
+Q2_MIXES = (("q", (QSEG,)), ("qf", (QSEG, QSEG_FT)), ("q2", (QSEG2,)), ("q2f", (QSEG2, QSEG2_FT)),
+            ("qq2", (QSEG, QSEG2)))
+
+
+def kfold_q2(src, d, out, procs, ysrc):
+    """The 25-column rule (geo + YOLO) fitted on all 707 out-of-fold photographs, as in
+    kfold_yolo; then for each Q2_MIXES map: fold 0's ensemble scored with the nested cut,
+    against "q" by bootstrap, and its test CSV, verified."""
+    d, out = Path(d), Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    print("models:", extract(src, d), flush=True)
+    yolo = load_yolo(ysrc)
+    assert sorted(yolo) == [0, 1, 2, 3, 4], "every fold needs its own YOLO"
+    truth = fold_truth(False)
+    pool = mp.Pool(procs) if procs > 1 else None
+    imap = pool.imap if pool else map
+    folds = np.concatenate([[n] * len(t["frames"]) for n, t in enumerate(truth)])
+    view = VIEW
+    cache = d / f"kfold_pool_rle_{view}"
+    cache.mkdir(parents=True, exist_ok=True)
+    jobs = [(str(d), f"{PAIR[n]}/{view}", stem, t["cache"], f, sets, str(cache), True)
+            for n, t in enumerate(truth) for f, stem, sets in t["frames"]]
+    frames = one_setting(list(imap(pool_job, jobs)))
+    frames = add_neighbours(frames, d, [f"{PAIR[g]}/{view}" for g in folds], "val", folds, imap)
+    frames = add_yolo(frames, [yolo[g] for g in folds], "val")
+    final_gy = fit(frames, np.arange(len(frames)), GEO_YOLO_COLS)
+    res = dict(photographs=len(folds), candidates=int(sum(len(f["X"]) for f in frames)), files={})
+    print(res, flush=True)
+    t0 = truth[0]
+    stems0 = [s for _, s, _ in t0["frames"]]
+    test_files = t0["meta"]["test_files"]
+    base = None
+    for tag, extras in Q2_MIXES:
+        if not all((d / "dump" / e.split("/")[0]).exists() for e in extras):
+            res[tag] = "dump not attached"
+            print(tag, res[tag], flush=True)
+            continue
+        mixed = mix_dump(d, f"{tag}mix0", ENS0.split("+"), extras, QSEG_W, "val", stems0)
+        c0 = d / f"kfold_pool_rle_{tag}mix0_{view}"
+        c0.mkdir(parents=True, exist_ok=True)
+        e0 = one_setting(list(imap(pool_job, [(str(d), mixed, stem, t0["cache"], f, sets, str(c0), True)
+                                              for f, stem, sets in t0["frames"]])))
+        e0 = add_neighbours(e0, d, [mixed] * len(e0), "val", np.zeros(len(e0), int), imap)
+        e0 = add_yolo(e0, [yolo[0]] * len(e0), "val")
+        res[tag], n25 = transfer(frames, folds, e0, GEO_YOLO_COLS)
+        if base is None:
+            base = (tag, n25)
+        else:
+            res[f"{tag}_minus_{base[0]}"] = boot(n25, base[1])
+        ten = mix_dump(d, f"{tag}mix10", FAMILIES["r50"] + FAMILIES["r34"], extras, 2 * QSEG_W,
+                       "test", [Path(n).stem for n in test_files])
+        res["files"][tag] = write_csv(d, ten, test_files, out / f"submission_kf10{tag}_rule_geo_yolo.csv", final_gy,
+                                      res[tag]["on_ens0_best_cut"]["cut"], GEO_YOLO_COLS, yolo=yolo)
+        res["files"][tag]["verify"] = verify(out / res["files"][tag]["file"])
+        print(tag, res[tag], {k: v for k, v in res.items() if k.startswith(tag + "_minus")}, flush=True)
+        json.dump(res, open(out / "kfold_q2.json", "w"), indent=1, default=float)
+    print(json.dumps(res, indent=1, default=float), flush=True)
+    return res
 
 
 def counts_at_cuts(frames, scores):
@@ -579,6 +648,11 @@ def kaggle_kfold_yolo():
     """filament-kfold-yolo: the dump kernels' tars and both YOLO kernels' predictions under /kaggle/input."""
     kfold_yolo(Path("/kaggle/input"), Path("/tmp/fil_post"), run.WORK, run.os.cpu_count() or 4, Path("/kaggle/input"),
                smoke=KFY_SMOKE)
+
+
+def kaggle_kfold_q2():
+    """filament-kfold-q2: as filament-kfold-yolo's inputs, plus filament-qwen-seg2 when it has run."""
+    kfold_q2(Path("/kaggle/input"), Path("/tmp/fil_post"), run.WORK, run.os.cpu_count() or 4, Path("/kaggle/input"))
 
 
 # ---------------------------------------------------------------- CLI

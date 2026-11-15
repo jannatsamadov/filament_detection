@@ -41,6 +41,16 @@ from run import torch, cv2, np, nn, F  # noqa: E402
 SMOKE = os.environ.get("FIL_QSEG_SMOKE") == "1"
 MODEL = "Qwen/Qwen3-VL-2B-Instruct"
 ARMS = ("pre", "ft")
+# 11-15, kernel filament-qwen-seg2: both arms were still rising at epoch 12 (pre: 0.391, 0.414,
+# 0.417 at 6, 9, 12), so each continues from its saved weights (filament-qwen-seg's
+# qwenseg_<arm>.pt) for CONT_EPOCHS more at half the learning rate; the loaded model is
+# scored first, so an arm that does not improve keeps its old weights. Arms pre2 and ft2.
+CONT = os.environ.get("FIL_QSEG_CONT") == "1"
+CONT_EPOCHS = 1 if SMOKE else 9
+CONT_VAL_AT = (1,) if SMOKE else (3, 6, 9)
+CONT_LR = 0.5
+if CONT:
+    ARMS = ("pre2", "ft2")
 TAPS = (5, 11, 17, 23)
 FREEZE = 6                       # patch embedding and blocks 0-5 stay as Qwen learned them
 CROP = 512 if SMOKE else 1024
@@ -49,7 +59,7 @@ BATCH = 2
 EPOCHS = 1 if SMOKE else 12
 VAL_AT = (1,) if SMOKE else (6, 9, 12)
 N_PSEUDO = 6 if SMOKE else 2000  # unlabelled frames used for pretraining (of 3810), evenly spread in time
-BUDGET_H = 5.0                   # per arm: past this, stop training, keep the best epoch, write everything
+BUDGET_H = 3.0 if CONT else 5.0  # per arm: past this, stop training, keep the best epoch, write everything
 LR_VIT, LR_HEAD = 2e-5, 5e-4
 ENS0 = ("flip", "full", "r50", "solar", "union")    # fold-0 models: never saw fold 0's validation labels
 WORK = run.WORK
@@ -332,14 +342,14 @@ def arm_main(arm):
           flush=True)
     scaler = torch.amp.GradScaler(enabled=device.type == "cuda")
 
-    def stage(ds, epochs, name, val_at=()):
+    def stage(ds, epochs, name, val_at=(), lr=1.0, best=(-1.0, None, 0)):
         loader = torch.utils.data.DataLoader(ds, batch_size=BATCH, shuffle=True, num_workers=3 if run.ON_KAGGLE else 0,
                                              drop_last=True, persistent_workers=run.ON_KAGGLE)
-        opt = torch.optim.AdamW([{"params": vit, "lr": LR_VIT}, {"params": head, "lr": LR_HEAD}], weight_decay=0.01)
+        opt = torch.optim.AdamW([{"params": vit, "lr": LR_VIT * lr}, {"params": head, "lr": LR_HEAD * lr}],
+                                weight_decay=0.01)
         total = max(1, epochs * len(loader))
         sched = torch.optim.lr_scheduler.LambdaLR(
             opt, lambda s: min(1.0, (s + 1) / 100) * 0.5 * (1 + math.cos(math.pi * min(1.0, s / total))))
-        best = (-1.0, None, 0)
         for ep in range(1, epochs + 1):
             t_ep = time.time()
             epoch_loop(model, opt, sched, scaler, loader, device, gov, arm, name, ep)
@@ -356,12 +366,27 @@ def arm_main(arm):
         return best
 
     t0 = time.time()
-    if arm == "pre":
-        items = pseudo_labels(device)
-        stage(Pseudo(items), 1, "pretrain")
-        print(f"[{arm}] pretrained on {len(items)} frames in {(time.time() - t0) / 60:.0f} min", flush=True)
     n_train = 6 if SMOKE else len(meta["train_files"])
-    best_pq, best_sd, best_ep = stage(run.Frames(n_train, "full"), EPOCHS, "finetune", VAL_AT)
+    if CONT:
+        roots = [Path("/kaggle/input")] if run.ON_KAGGLE else [HERE / "out", ROOT / "kernels"]
+        ck = next((p for r in roots for p in r.rglob(f"qwenseg_{arm[:-1]}.pt")), None)
+        if ck is None:
+            raise RuntimeError(f"qwenseg_{arm[:-1]}.pt not attached (kernel filament-qwen-seg)")
+        sd = torch.load(ck, map_location="cpu")
+        model.load_state_dict({k: v.float() for k, v in sd.items()})
+        del sd
+        r = score(val_maps(model, device, ondisk, meta, val_files), gt, quick=True)[0]
+        print(f"[{arm}] loaded {ck}: val PQ {r['PQ']:.4f} at t {r['thresh']} merge {r['merge']} area {r['min_area']}",
+              flush=True)
+        start = (r["PQ"], {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}, 0)
+        best_pq, best_sd, best_ep = stage(run.Frames(n_train, "full"), CONT_EPOCHS, "continue", CONT_VAL_AT,
+                                          lr=CONT_LR, best=start)
+    else:
+        if arm == "pre":
+            items = pseudo_labels(device)
+            stage(Pseudo(items), 1, "pretrain")
+            print(f"[{arm}] pretrained on {len(items)} frames in {(time.time() - t0) / 60:.0f} min", flush=True)
+        best_pq, best_sd, best_ep = stage(run.Frames(n_train, "full"), EPOCHS, "finetune", VAL_AT)
     model.load_state_dict(best_sd)
     print(f"[{arm}] best epoch {best_ep} (quick val PQ {best_pq:.4f}), {(time.time() - t0) / 60:.0f} min", flush=True)
 

@@ -85,6 +85,12 @@ def main():
                                   "# kernels/build.py sets this in kfold_yolo_smoke/run.py", "KFY_SMOKE = True")
     (HERE / "kfold_yolo_smoke").mkdir(exist_ok=True)
     (HERE / "kfold_yolo_smoke" / "run.py").write_text(kfold_yolo_smoke, encoding="utf-8")
+    # 11-15: which Qwen members the final map carries (needs filament-qwen-seg2 for its last arms)
+    kfold_q2 = kfold.replace('if __name__ == "__main__":\n    kaggle_kfold()\n',
+                             'if __name__ == "__main__":\n    kaggle_kfold_q2()\n')
+    assert kfold_q2 != kfold
+    (HERE / "kfold_q2").mkdir(exist_ok=True)
+    (HERE / "kfold_q2" / "run.py").write_text(kfold_q2, encoding="utf-8")
 
     # v9: the user's pixel table (aug_unet/pixel_gbm.py) on top of the same merged file
     pix = (HERE / "aug_unet" / "pixel_gbm.py").read_text(encoding="utf-8")
@@ -151,6 +157,10 @@ def main():
                       + ('os.environ["FIL_YOLO_SMOKE"] = "1"\n' if smoke else ""))
     qsmoke = "--qseg-smoke" in sys.argv
     qseg = launcher("filament-qwen-seg", "qwen_seg", env='os.environ["FIL_QSEG_SMOKE"] = "1"\n' if qsmoke else "")
+    # both Qwen arms continued from their saved weights (11-15)
+    qseg2 = launcher("filament-qwen-seg2", "qwen_seg", env='os.environ["FIL_QSEG_CONT"] = "1"\n'
+                     + ('os.environ["FIL_QSEG_SMOKE"] = "1"\n' if qsmoke else ""))
+    assert "FIL_QSEG_CONT" in qseg2 and "CONT_EPOCHS" in qseg2
     # the user's from-scratch per-pixel network (aug_unet/pixnet.py): needs nothing beyond Kaggle's image
     psmoke = "--pixnet-smoke" in sys.argv
     pixnet = launcher("filament-pixnet", "pixnet", pip="", env='os.environ["FIL_PIXNET_SMOKE"] = "1"\n' if psmoke else "")
@@ -165,6 +175,7 @@ def main():
         "SRC = " + repr(mods), "SRC = " + repr(pmods))
     assert "pixel_nb.py" in pixnet_rot and "pixel_nb.py" in pixnet_rot_smoke
     for name, text in (("qwen_ft", qwen), ("qwen_geo", qgeo), ("yolo", yolo), ("yolo_b", yolo_b), ("qwen_seg", qseg),
+                       ("qwen_seg2", qseg2),
                        ("pixnet", pixnet), ("pixnet_rot", pixnet_rot), ("pixnet_rot_smoke", pixnet_rot_smoke)):
         (HERE / name).mkdir(exist_ok=True)
         (HERE / name / "run.py").write_text(text, encoding="utf-8")
@@ -203,15 +214,20 @@ def main():
     nbr = nbk.replace("SRC = " + repr(nmods), "SRC = " + repr(rmods)).replace("filament-pixel-nb,", "filament-pixel-nbr,")
     nbr_smoke = nbr.replace("import sys\n", 'import os, sys\nos.environ["FIL_NB_SMOKE"] = "1"\n', 1)
     assert nbr != nbk and nbr_smoke != nbr
-    for name, text in (("pixel_nbr", nbr), ("pixel_nbr_smoke", nbr_smoke)):
+    # Claude's arm next to the user's table: the classifier without the 880 neighbour positions (11-15)
+    nbcc = nbc.replace("import sys\n", 'import os, sys\nos.environ["FIL_NB_CC"] = "1"\n', 1).replace(
+        "filament-pixel-nbc,", "filament-pixel-nbcc,")
+    assert nbcc != nbc and 'NB_LEARNER = "cls"' in nbcc
+    for name, text in (("pixel_nbr", nbr), ("pixel_nbr_smoke", nbr_smoke), ("pixel_nbcc", nbcc)):
         (HERE / name).mkdir(exist_ok=True)
         (HERE / name / "run.py").write_text(text, encoding="utf-8")
 
-    built = [(nbr, "pixel_nbr"), (nbr_smoke, "pixel_nbr_smoke"), (nbc, "pixel_nbc"), (nbk, "pixel_nb"), (ideas, "pixel_ideas"), (dump, "aug_dump"), (merged, "aug_post"), (keep, "keep_cnn"), (kfold, "kfold"), (kfold_yolo, "kfold_yolo"),
-             (kfold_yolo_smoke, "kfold_yolo_smoke"), (pixel, "pixel"), (pixel_smoke, "pixel_smoke"), (pixel_rf, "pixel_rf"),
+    built = [(nbcc, "pixel_nbcc"), (nbr, "pixel_nbr"), (nbr_smoke, "pixel_nbr_smoke"), (nbc, "pixel_nbc"), (nbk, "pixel_nb"), (ideas, "pixel_ideas"), (dump, "aug_dump"), (merged, "aug_post"), (keep, "keep_cnn"), (kfold, "kfold"), (kfold_yolo, "kfold_yolo"),
+             (kfold_yolo_smoke, "kfold_yolo_smoke"), (kfold_q2, "kfold_q2"), (pixel, "pixel"), (pixel_smoke, "pixel_smoke"), (pixel_rf, "pixel_rf"),
              (pixel_rf0, "pixel_rf0"), (pixnet_mix, "pixnet_mix"), (pixnet_mix_smoke, "pixnet_mix_smoke"),
              (qwen, "qwen_ft"), (qgeo, "qwen_geo"), (yolo, "yolo" + (" (smoke)" if smoke else "")),
              (yolo_b, "yolo_b" + (" (smoke)" if smoke else "")), (qseg, "qwen_seg" + (" (smoke)" if qsmoke else "")),
+             (qseg2, "qwen_seg2" + (" (smoke)" if qsmoke else "")),
              (pixnet, "pixnet" + (" (smoke)" if psmoke else ""))]
     for r in ("r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9"):               # one training kernel per later run
         src = with_const(run, RUN_LINE, f'RUN = "{r}"')

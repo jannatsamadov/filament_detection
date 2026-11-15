@@ -64,3 +64,13 @@ kaggle_upload/
 # conference abstracts, slides and the journal manuscript: unpublished, kept out of the public repo
 Publication/
 SUBMISSION_TODO.md
+
+# notebook inputs and outputs when run locally
+inputs/
+notebooks/out/
+
+# tools for the user only (public export)
+private_tools/
+
+# local tools (LaTeX compiler)
+.tools/

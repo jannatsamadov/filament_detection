@@ -33,7 +33,7 @@ def pipeline():
     box(ax, 0.19, 0.70, 0.31, 0.26, "10 U-Nets\nR34 & R50 $\\times$ 5 folds\nsoft target, D4", UNET, 5.8)
     box(ax, 0.19, 0.37, 0.31, 0.26, "Qwen3-VL ViT\nsegmenter, pre-\ntrained on GONG", QWEN, 5.8)
     box(ax, 0.19, 0.04, 0.31, 0.26, "YOLO11l-seg\n$\\times$ 5 folds", YOLO, 5.8)
-    box(ax, 0.57, 0.64, 0.24, 0.32, "mean map\n(Qwen weight 2/12)\n$\\downarrow$ candidates:\nt 0.65, join 7 px,\narea $\\geq$ 350 px", POST, 5.0)
+    box(ax, 0.57, 0.64, 0.24, 0.32, "mean map\n(Qwen weight 2/12)\n$\\downarrow$ candidates:\nt 0.6, join 3 px,\narea $\\geq$ 100 px", POST, 5.0)
     box(ax, 0.57, 0.04, 0.24, 0.50, "selection rule\nGBM, 25 features:\nappearance,\nheliographic\nlat. & long.,\naxis orientation,\nYOLO agreement;\ncut 0.18", POST, 5.0)
     box(ax, 0.87, 0.40, 0.13, 0.20, "masks\n(RLE)", POST, 5.8)
     for y in (0.83, 0.50, 0.17):

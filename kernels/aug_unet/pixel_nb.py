@@ -79,12 +79,21 @@ if NB_ROT:
 NCOL = len(COLS)
 ARM_COLS = {"nb": slice(0, NCOL), "nb_count": slice(0, NCOL), "ctrl": slice(0, len(OLD)),
             "nbc": slice(0, NCOL), "ctrlc": slice(0, len(OLD)), "nbcr": slice(0, NCOL)}
-ARM_TARGET = {"nb": "share", "nb_count": "count", "ctrl": "share", "nbc": "share", "ctrlc": "share", "nbcr": "share"}
+# Claude's arm (11-15), next to the user's table, not instead of it: nbc fell below its 35-column
+# control (pixel F1 0.443 vs 0.530). The 880 neighbour positions are the pixel's own x, y plus a
+# constant, and a forest that draws sqrt(1358) = 37 columns per split rarely sees the useful ones
+# among them. nbcc keeps everything but those positions: 35 + x, y, own contrast + 440 contrasts.
+ARM_COLS["nbcc"] = np.r_[0:len(OLD) + 3, len(OLD) + 3:BASE_N:3]
+ARM_TARGET = {"nb": "share", "nb_count": "count", "ctrl": "share", "nbc": "share", "ctrlc": "share", "nbcr": "share",
+              "nbcc": "share"}
+NB_CC = os.environ.get("FIL_NB_CC") == "1"     # kernel filament-pixel-nbcc (with NB_LEARNER = "cls")
 ARMS = ("ctrl", "nb", "nb_count") if NB_LEARNER == "reg" else ("ctrlc", "nbc")
 MAIN_ARM = "nb" if NB_LEARNER == "reg" else "nbc"
 TAG = "nb" if NB_LEARNER == "reg" else "nbc"
 if NB_ROT:                                    # pixel_nbc (same rows, same forest, no rotation columns) is its control
     ARMS, MAIN_ARM, TAG = ("nbcr",), "nbcr", "nbcr"
+if NB_CC:                                     # its control is pixel_nbc's ctrlc and nbc: same rows, same forest
+    ARMS, MAIN_ARM, TAG = ("nbcc",), None, "nbcc"
 TAG += "_smoke" if SMOKE else ""
 MAPS = (Path("/tmp") if run.ON_KAGGLE else WORK) / f"{TAG}_maps"
 ROT_SLOTS_OF = {}                             # file -> per slot (other file, gap in days) or None
@@ -452,9 +461,10 @@ def main(procs):
         t0 = time.time()
         t, w = targets[ARM_TARGET[arm]]
         cols = ARM_COLS[arm]
-        MODELS[arm] = fit(Xt if cols.stop == NCOL else np.ascontiguousarray(Xt[:, cols]), t, w)
+        whole = isinstance(cols, slice) and cols.start == 0 and cols.stop == NCOL
+        MODELS[arm] = fit(Xt if whole else np.ascontiguousarray(Xt[:, cols]), t, w)
         res["fit_minutes"][arm] = round((time.time() - t0) / 60, 1)
-        res["mdi"][arm] = mdi(MODELS[arm], COLS[cols])
+        res["mdi"][arm] = mdi(MODELS[arm], COLS[cols] if isinstance(cols, slice) else [COLS[i] for i in cols])
         log("fitted", arm, res["fit_minutes"][arm], "min", res["mdi"][arm].get("groups", ""))
     del X, Xt, A, W, V, targets
     gc.collect()
@@ -480,9 +490,10 @@ def main(procs):
     log("row AUC on fold 0", res["row_auc_vs_share"])
     rng = np.random.default_rng(0)
     sub = rng.choice(len(VW), min(150000, len(VW)), replace=False)
-    MODELS[MAIN_ARM].n_jobs = -1
-    res["importance_" + MAIN_ARM] = importance(MODELS[MAIN_ARM], VX[sub], VA[sub, 2], VW[sub], rng)
-    log("importance", res["importance_" + MAIN_ARM])
+    if MAIN_ARM is not None:                  # the group importance reads the full table's column layout
+        MODELS[MAIN_ARM].n_jobs = -1
+        res["importance_" + MAIN_ARM] = importance(MODELS[MAIN_ARM], VX[sub], VA[sub, 2], VW[sub], rng)
+        log("importance", res["importance_" + MAIN_ARM])
 
     tar = WORK / f"dump_{TAG}.tar"
     with tarfile.open(tar, "w") as tf:

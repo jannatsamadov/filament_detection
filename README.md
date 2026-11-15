@@ -1,88 +1,77 @@
 # Solar Filament Segmentation Challenge 2026
 
-Instance segmentation of solar filaments in GONG H-alpha full-disk images
-(2048x2048), for the [IEEE BigData Cup competition](https://www.kaggle.com/competitions/filament-segmentation-2026).
-Scored with Panoptic Quality.
+Instance segmentation of solar filaments in GONG H-alpha full-disk photographs (2048 × 2048).
 
-## Approach: spine-first, no boxes
+- Competition: [IEEE BigData Cup, Kaggle](https://www.kaggle.com/competitions/filament-segmentation-2026), scored by panoptic quality (PQ).
+- Team: J. Samadov, N. S. Dzhalilov, A. Habilov.
 
-A filament is a long, thin, curved ribbon — a median **8.2 px wide and 125 px
-long**, filling only **24%** of its own bounding box. Measured over 2665 ground
-truth boxes, only **33%** could reach IoU 0.7 with any default anchor of a
-Mask R-CNN FPN, so the region proposal network never received enough positive
-examples and every configuration we tried collapsed to predicting nothing.
+**Start with [`notebooks/pipeline.ipynb`](notebooks/pipeline.ipynb).** It walks through the whole pipeline and rebuilds the submitted file from the saved model outputs. The technical report is in [`report/overleaf/`](report/overleaf/).
 
-This solution drops boxes entirely. A U-Net predicts three maps at the native
-2048 resolution, and instances are assembled geometrically:
+## Result
+
+| | fold-0 validation PQ (nested) | public test PQ |
+|---|---|---|
+| single ResNet-50 U-Net, D4 | 0.434 | 0.36 |
+| ten fold U-Nets + selection rule with heliographic features | 0.452 | 0.38 |
+| + Qwen3-VL segmenter map + YOLO11 features (**submitted**) | **0.458** | **0.39** |
+
+One expert scored against the other experts reaches PQ 0.35 on the same photographs. At the pixel level the submitted map agrees with the experts (F1 0.71) better than one expert agrees with the rest (0.65).
+
+## Pipeline
 
 ```
-image ──▶ U-Net ──┬──▶ semantic   (filament / background)
-                  ├──▶ spine      (Gaussian ridge along the centreline)
-                  └──▶ radius     (distance to the mask boundary)
-
-spine ──▶ threshold ──▶ connected components ──▶ smoothing spline
-      ──▶ sweep a disk of the predicted radius ──▶ ∩ semantic ──▶ instance
+GONG Hα 2048² ─┬─ 10 U-Nets (ResNet-34/50 × 5 folds, full frame, soft target, D4) ──┐
+               ├─ Qwen3-VL-2B vision encoder + mask decoder (pre-trained on GONG) ──┴─ mean map (Qwen 2/12)
+               │                                                                      │
+               │                                     candidates: t 0.6, join 3 px, area ≥ 100 px
+               │                                                                      │
+               └─ YOLO11l-seg × 5 folds ── agreement features ──▶ selection rule (gradient boosting, 25 features:
+                                                                   appearance, heliographic latitude and longitude,
+                                                                   axis orientation, YOLO agreement), cut 0.18
+                                                                                      │
+                                                                               masks → COCO RLE
 ```
 
-Each instance is a swept curve, so it is a single connected region by
-construction — the fragmentation that Panoptic Quality punishes hardest cannot
-occur, and there is no NMS. Separation comes from the spines themselves: only
-**0.9%** of spines come within 10 px of another filament's spine, against 2.8%
-of the masks.
+1. **U-Nets** ([`kernels/aug_unet/run.py`](kernels/aug_unet/run.py)).
+   - Input: the whole 2048 frame, so filaments are never cut by tiles.
+   - Target: the fraction of experts who drew each pixel.
+   - Loss: BCE (positive weight 10) plus soft Dice on the disk.
+   - Augmentation: rotation by any angle about the disk centre, mirrors, and photometric changes within the ranges measured between GONG frames.
+   - Inference: the 8 symmetries of the square (D4) are averaged.
+2. **Qwen3-VL segmenter** ([`qwen_seg.py`](kernels/aug_unet/qwen_seg.py)).
+   - The 24-block vision encoder of Qwen3-VL-2B with a convolutional mask decoder.
+   - Pre-trained on 2000 unlabelled GONG frames with the U-Nets' maps as targets, then fine-tuned. It is a second family whose errors differ from the U-Nets'.
+3. **YOLO11l-seg** ([`yolo_seg.py`](kernels/aug_unet/yolo_seg.py)), one per fold. It is used as an independent opinion on each candidate, not for the masks.
+4. **Candidates and selection rule** ([`candidate_pool.py`](kernels/aug_unet/candidate_pool.py), [`kfold.py`](kernels/aug_unet/kfold.py)).
+   - Each candidate is described by its appearance, its place in a threshold/join grid, its heliographic latitude and longitude from the central meridian (with the solar B0 angle at the observation time), the orientation of its long axis, and four YOLO agreement features.
+   - Gradient-boosted trees predict its IoU with the experts.
+   - The rule is trained on the out-of-fold candidates of all 707 photographs; the cut is chosen nested on fold 0's ensemble.
 
-Sweeping the *annotated* spine with its true half-width reconstructs the
-annotated mask at **median IoU 0.758**, which bounds what the representation can
-achieve. Feeding the assembly its own ground-truth maps scores **PQ 0.734**.
+Every number above is out-of-fold or nested, with bootstrap intervals over photographs (see the report).
 
-## Preprocessing
+## Repository
 
-The images arrive geometrically registered (disk centre 1024,1024 ± 0.5 px,
-radius 904 ± 0.8 px) but *not* photometrically: the depth of limb darkening
-varies from 0.72 to 0.85 between frames, which is atmospheric rather than solar.
-Dividing out each frame's own quiet-sun radial profile (75th percentile per
-radial bin, so filaments do not drag it down) **doubles filament contrast**
-(0.67σ → 1.33σ) and more than halves the confusion with quiet chromosphere
-(27.9% → 11.4%).
-
-Note the limb must be located by the steepest radial brightness drop, not by
-thresholding: a scattered-light halo surrounds the disk out to about 1.15 R☉ and
-a naive fit reads the radius 13% too large.
-
-## Layout
-
-| Path | Purpose |
+| Path | What it is |
 |---|---|
-| `src/geometry.py` | solar limb detection (fit residual ~2 px) |
-| `src/photometry.py` | limb-darkening flattening |
-| `src/preprocess.py` | one-off flattening of all frames |
-| `src/precompute_targets.py` | one-off rasterisation of the three targets |
-| `src/spine_data.py` | patch dataset, split grouped by photograph |
-| `src/spine_model.py` | U-Net with ResNet encoder, three heads |
-| `src/spine_train.py` | training, full-frame PQ validation |
-| `src/spine_infer.py` | instance assembly (spine → spline → sweep) |
-| `src/spine_calibrate.py` | threshold sweep on cached predictions |
-| `src/spine_predict.py` | test set → RLE → submission CSV |
-| `src/verify_submission.py` | eight checks before an upload is spent |
-| `src/metrics.py` | Panoptic Quality |
-| `src/thermal.py` | GPU duty-cycling for a laptop with a dead fan |
-| `src/check_*.py` | the measurements the design decisions rest on |
+| `notebooks/pipeline.ipynb` | the whole pipeline, executed, rebuilding the submitted CSV |
+| `kernels/aug_unet/` | the code. Each Kaggle kernel is generated from it by `kernels/build.py` |
+| `kernels/<name>/kernel-metadata.json` | the Kaggle kernels that trained the models and wrote their probability maps |
+| `kernels/aug_unet/pixel_*.py`, `pixnet.py` | the physical per-pixel analysis: a table of position, time, station, contrast against the quiet Sun, neighbours and differential rotation, with random forests and a per-pixel network (report, Section 4) |
+| `report/` | the technical report (ACM template) and its figure scripts |
+| `src/verify_submission.py` | checks a CSV the way the scorer decodes it, before an upload |
+| `src/` (rest) | the earlier spine/half-width approach and the measurements the design rests on |
 
 ## Reproducing
 
 ```bash
-python -m venv .venv && ./.venv/Scripts/python -m pip install -r requirements.txt
-# place the Kaggle data in MAGFiLO_1.0_Kaggle_2026/
-python src/preprocess.py train test
-python src/precompute_targets.py
-python src/spine_train.py --epochs 20
-python src/spine_calibrate.py
-python src/spine_predict.py --out submission.csv
-python src/verify_submission.py submission.csv --test-dir MAGFiLO_1.0_Kaggle_2026/test/test_images
+pip install -r requirements.txt
+kaggle competitions download -c filament-segmentation-2026   # unzip into MAGFiLO_1.0_Kaggle_2026/
+jupyter nbconvert --to notebook --execute notebooks/pipeline.ipynb
 ```
+
+- The notebook downloads the trained models' outputs from the public Kaggle kernels with the Kaggle CLI, so no GPU is needed. Refitting the selection rule takes about an hour on 4 CPU cores.
+- To retrain a model, run `python kernels/build.py`, then `kaggle kernels push -p kernels/<kernel>`. Each U-Net kernel trains two models side by side on Kaggle's two T4 GPUs.
 
 ## Acknowledgment
 
-This work utilizes GONG data obtained by the NSO Integrated Synoptic Program,
-managed by the National Solar Observatory, operated by AURA under a cooperative
-agreement with the National Science Foundation and with contribution from NOAA.
-Ground truth is MAGFiLO (doi:10.1038/s41597-024-03876-y).
+This work utilizes GONG data obtained by the NSO Integrated Synoptic Program, managed by the National Solar Observatory, operated by AURA under a cooperative agreement with the National Science Foundation and with contribution from NOAA. Ground truth is MAGFiLO (doi:10.1038/s41597-024-03876-y).
