@@ -74,3 +74,4 @@ private_tools/
 
 # local tools (LaTeX compiler)
 .tools/
+modeller.md

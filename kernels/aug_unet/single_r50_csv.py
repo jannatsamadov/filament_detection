@@ -16,9 +16,21 @@ from run import np, cv2  # noqa: E402
 import candidate_pool as C  # noqa: E402
 
 TAR = HERE.parent / "unet_r2" / "out_kaggle" / "dump_r50.tar"
+SUNET = HERE / "out" / "sunet_maps"          # kernels/aug_unet/sunet_d4.py
+NAME = sys.argv[1] if len(sys.argv) > 1 else "r50"   # r50, sunet_pre, sunet_scratch, sunet_both
+
+
+def _dir_maps(arm, view, split):
+    d = SUNET / arm / f"{split}_{view}"
+    return {p.stem: cv2.imread(str(p), cv2.IMREAD_GRAYSCALE) for p in sorted(d.glob("*.png"))}
 
 
 def maps(view, split):
+    if NAME == "sunet_both":                  # the two compact networks' mean
+        a, b = _dir_maps("pre", view, split), _dir_maps("scratch", view, split)
+        return {s: ((a[s].astype(np.uint16) + b[s]) // 2).astype(np.uint8) for s in a}
+    if NAME.startswith("sunet_"):
+        return _dir_maps(NAME[len("sunet_"):], view, split)
     out = {}
     with tarfile.open(TAR) as t:
         for m in t.getmembers():
@@ -48,7 +60,8 @@ def main():
             frames.append(dict(stem=s, X=X, Z=np.zeros((len(cands), 0), np.float16), Y=Y.astype(np.float32),
                                n_gt=[len(x) for x in by_frame[i]], conflict=C.conflicts(cands),
                                one=np.array([C.ONE_SETTING in c["from"] for c in cands], bool)))
-        print(f"\nR50, {view}: fold 0 on held-out halves", flush=True)
+        assert len(vm) == len(meta["val_files"]) and len(tm) == len(meta["test_files"]), (len(vm), len(tm))
+        print(f"\n{NAME}, {view}: fold 0 on held-out halves", flush=True)
         r = S.stage2_eval(frames)
         # the final selector: all 141 photographs; its cut from the two inner halves' out-of-fold scores
         inner = [frames[0::2], frames[1::2]]
@@ -74,16 +87,16 @@ def main():
                     rle = run.mu.encode(np.asfortranarray(m))
                     rows.append(f"{s}_{n_kept},{rle['counts'].decode('ascii')}")
             per.append(n_kept)
-        out = HERE / "out" / f"submission_r50_{view}_rule21.csv"
+        out = HERE / "out" / f"submission_{NAME}_{view}_rule21.csv"
         out.write_text("filament_id,segmentation_rle\n" + "\n".join(rows) + "\n")
         v = subprocess.run([sys.executable, str(HERE.parents[1] / "src" / "verify_submission.py"), str(out),
                             "--test-dir", str(te_dir)], capture_output=True, text=True)
         res[view] = dict(fold0_halves=r, cut=cut, file=str(out), rows=len(rows), per_image=round(float(np.mean(per)), 2),
                          empty=int(sum(x == 0 for x in per)), verify_exit=v.returncode, verify_tail=v.stdout[-400:],
                          minutes=round((time.time() - t0) / 60, 1))
-        print(f"R50 {view}: cut {cut}, {len(rows)} rows, {np.mean(per):.2f} per photograph; verify exit {v.returncode}\n"
-              f"{v.stdout[-300:]}", flush=True)
-        json.dump(res, open(HERE / "out" / "single_r50.json", "w"), indent=1)
+        print(f"{NAME} {view}: cut {cut}, {len(rows)} rows, {np.mean(per):.2f} per photograph; verify exit "
+              f"{v.returncode}\n{v.stdout[-300:]}", flush=True)
+        json.dump(res, open(HERE / "out" / f"single_{NAME}.json", "w"), indent=1)
 
 
 if __name__ == "__main__":

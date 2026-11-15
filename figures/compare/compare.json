@@ -1,0 +1,137 @@
+{
+ "photographs": [
+  "20140720195834Ch",
+  "20120218173614Mh",
+  "20130905073714Th"
+ ],
+ "models": {
+  "rf": "RF (35 columns + U-Net pair), join 24 px + selector",
+  "pixnet": "PixNet, join 6 px + selector",
+  "top": "5 U-Nets + Qwen (the submitted map), join 14 px + selector"
+ },
+ "counts": {
+  "rf": {
+   "20140720195834Ch": {
+    "pixels": {
+     "TP": 16247,
+     "FP": 6228,
+     "FN": 2076
+    },
+    "filaments": {
+     "TP": 5,
+     "FP": 0,
+     "FN": 1
+    },
+    "cut": 0.19
+   },
+   "20120218173614Mh": {
+    "pixels": {
+     "TP": 9317,
+     "FP": 8831,
+     "FN": 1866
+    },
+    "filaments": {
+     "TP": 7,
+     "FP": 0,
+     "FN": 1
+    },
+    "cut": 0.2
+   },
+   "20130905073714Th": {
+    "pixels": {
+     "TP": 12908,
+     "FP": 10149,
+     "FN": 3069
+    },
+    "filaments": {
+     "TP": 5,
+     "FP": 3,
+     "FN": 8
+    },
+    "cut": 0.2
+   }
+  },
+  "pixnet": {
+   "20140720195834Ch": {
+    "pixels": {
+     "TP": 15593,
+     "FP": 3955,
+     "FN": 2730
+    },
+    "filaments": {
+     "TP": 5,
+     "FP": 1,
+     "FN": 1
+    },
+    "cut": 0.19
+   },
+   "20120218173614Mh": {
+    "pixels": {
+     "TP": 9760,
+     "FP": 9334,
+     "FN": 1423
+    },
+    "filaments": {
+     "TP": 6,
+     "FP": 1,
+     "FN": 2
+    },
+    "cut": 0.22
+   },
+   "20130905073714Th": {
+    "pixels": {
+     "TP": 13671,
+     "FP": 14220,
+     "FN": 2306
+    },
+    "filaments": {
+     "TP": 7,
+     "FP": 3,
+     "FN": 6
+    },
+    "cut": 0.22
+   }
+  },
+  "top": {
+   "20140720195834Ch": {
+    "pixels": {
+     "TP": 17374,
+     "FP": 9752,
+     "FN": 949
+    },
+    "filaments": {
+     "TP": 4,
+     "FP": 2,
+     "FN": 2
+    },
+    "cut": 0.16
+   },
+   "20120218173614Mh": {
+    "pixels": {
+     "TP": 9945,
+     "FP": 12160,
+     "FN": 1238
+    },
+    "filaments": {
+     "TP": 5,
+     "FP": 1,
+     "FN": 3
+    },
+    "cut": 0.2
+   },
+   "20130905073714Th": {
+    "pixels": {
+     "TP": 13680,
+     "FP": 12711,
+     "FN": 2297
+    },
+    "filaments": {
+     "TP": 6,
+     "FP": 3,
+     "FN": 7
+    },
+    "cut": 0.2
+   }
+  }
+ }
+}
