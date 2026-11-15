@@ -79,8 +79,18 @@ for arm, shown in (("table", "PixNet + 35 columns"), ("tablerot", "PixNet + 35 c
     if tar.exists():
         DUMPS[f"p_{arm}"] = (tar, "val_plain")
         MODELS[shown] = ((f"p_{arm}",), (1,))
+# the wide table with tuned learners (filament-pixel-nbc-xgb / -nbc-rf), the compact network and its time-attention
+# arms (filament-solar-unet, filament-solar-time), all 11-15
+for tar, folder, shown in ((KER / "pixel_nbc_xgb/out_kaggle/dump_nbc_xgb.tar", "nbc", "XGBoost: + 12 px neighbours (1358 col.)"),
+                           (KER / "pixel_nbc_rf/out_kaggle/dump_nbc_rf.tar", "nbc", "RF 300 trees: + 12 px neighbours (1358 col.)"),
+                           (KER / "solar_unet/out_kaggle/dump_sunet_scratch.tar", "val_plain", "Compact network (scratch)"),
+                           (KER / "solar_time/out_kaggle/dump_stime_ctrl.tar", "val_plain", "Compact network, control arm"),
+                           (KER / "solar_time/out_kaggle/dump_stime_time.tar", "val_plain", "Compact network + time attention")):
+    if tar.exists():
+        DUMPS[f"x_{tar.stem}"] = (tar, folder)
+        MODELS[shown] = ((f"x_{tar.stem}",), (1,))
 T_FIXED = 0.5
-BAND = 16                                  # px at 2048: the "hard" pixels are expert pixels and those this close to them
+BAND = 16                                 # px at 2048: the "hard" pixels are expert pixels and those this close to them
 
 
 class Dumps:

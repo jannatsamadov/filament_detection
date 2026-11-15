@@ -31,8 +31,9 @@ def maps(view, split):
         return {s: ((a[s].astype(np.uint16) + b[s]) // 2).astype(np.uint8) for s in a}
     if NAME.startswith("sunet_"):
         return _dir_maps(NAME[len("sunet_"):], view, split)
+    tar = (HERE.parent / "solar_time" / "out_kaggle" / f"dump_{NAME}.tar") if NAME.startswith("stime_") else TAR
     out = {}
-    with tarfile.open(TAR) as t:
+    with tarfile.open(tar) as t:
         for m in t.getmembers():
             if m.isfile() and Path(m.name).parent.name == f"{split}_{view}":
                 out[Path(m.name).stem] = cv2.imdecode(np.frombuffer(t.extractfile(m).read(), np.uint8), cv2.IMREAD_GRAYSCALE)
@@ -49,7 +50,7 @@ def main():
         by_frame[g["frame"]].append(g["crops"])
     S.VARIANTS = {k: v for k, v in S.VARIANTS.items() if v[1] in (None, "X")}
     res = {}
-    for view in ("plain", "d4"):
+    for view in ("plain",) if NAME.startswith("stime_") else ("plain", "d4"):   # the time model: plain maps only
         t0 = time.time()
         vm, tm = maps(view, "val"), maps(view, "test")
         frames = []
