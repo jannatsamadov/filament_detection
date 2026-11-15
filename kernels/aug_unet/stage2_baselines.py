@@ -6,7 +6,7 @@ of the submitted mix, one R50 U-Net and PixNet. These maps carry no network feat
 that use the 21 numbers are run.
     python kernels/aug_unet/stage2_baselines.py      -> out/stage2_baselines.json, out/stage2_<model>.pkl
 """
-import collections, json, pickle, sys, time
+import collections, json, os, pickle, sys, time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -17,7 +17,14 @@ from run import np  # noqa: E402
 import run  # noqa: E402
 import candidate_pool as C  # noqa: E402
 
-MODELS = ("5 U-Nets + Qwen (submitted mix)", "U-Net R50 (one model)", "PixNet, 30 epochs")
+MODELS = tuple(sys.argv[1:]) or ("5 U-Nets + Qwen (submitted mix)", "U-Net R50 (one model)", "PixNet, 30 epochs")
+OUT = "stage2_baselines.json" if len(sys.argv) < 2 else "stage2_baselines_extra.json"
+# the one setting the rule's outlines come from, e.g. FIL_ONE=0.7,7 (the join sweep of 11-15 favoured wider joins)
+if os.environ.get("FIL_ONE"):
+    t_, k_ = os.environ["FIL_ONE"].split(",")
+    C.ONE_SETTING = (float(t_), int(k_))
+    OUT = OUT.replace(".json", f"_one{t_}_{k_}.json")
+    S.VARIANTS = {k.replace("t 0.6, join 3", f"t {t_}, join {k_}"): v for k, v in S.VARIANTS.items()}
 
 
 def main():
@@ -50,7 +57,7 @@ def main():
         print(f"\n{name}: {len(frames)} photographs, {sum(len(f['one']) for f in frames)} outlines, "
               f"{time.time() - t0:.0f}s", flush=True)
         out[name] = S.stage2_eval(frames)
-        json.dump(out, open(HERE / "out" / "stage2_baselines.json", "w"), indent=1)
+        json.dump(out, open(HERE / "out" / OUT, "w"), indent=1)
 
 
 if __name__ == "__main__":

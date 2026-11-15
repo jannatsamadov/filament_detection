@@ -146,9 +146,18 @@ class SolarUNet(nn.Module):
         four = four[None].expand(g.shape[0], -1, -1, -1)
         return self.pos(torch.cat([g, four], 1).flatten(2).transpose(1, 2))
 
-    def forward(self, x, geo, meta, feats=False):
+    @property
+    def n_enc(self):
+        return sum(len(lv) for lv in self.enc)
+
+    def films(self, meta):
+        f = list(self.film(meta).split(self.n_film, 1))
+        return f[:self.n_enc], f[self.n_enc:]
+
+    def encode(self, x, geo, meta, films):
+        """The left wing and the 64 x 64 attention: the skips and the tokens (B, 4096, D)."""
         rel = (x - meta[:, PX.MED, None, None, None]) / meta[:, PX.SPREAD, None, None, None].clamp_min(0.05)
-        films = iter(self.film(meta).split(self.n_film, 1))
+        films = iter(films)
         h, skips = torch.cat([x, rel, geo.to(x.dtype)], 1), []
         for i, lv in enumerate(self.enc):
             if i:
@@ -157,11 +166,21 @@ class SolarUNet(nn.Module):
                 h = self._run(blk, h, next(films), i)
             skips.append(h)
         h = self.down[-1](h)                                            # 64 x 64
-        B, D, S, _ = h.shape
-        t = h.flatten(2).transpose(1, 2) + self._pos(geo, S).to(h.dtype)
+        t = h.flatten(2).transpose(1, 2) + self._pos(geo, h.shape[-1]).to(h.dtype)
         for a in self.att:     # 8 heads x 4096 x 4096 weights per layer when the fused kernel is not available
             t = (torch.utils.checkpoint.checkpoint(a, t, use_reentrant=False) if self.ckpt and self.training
                  else a(t))
+        return skips, t
+
+    def forward(self, x, geo, meta, feats=False):
+        fe, fd = self.films(meta)
+        skips, t = self.encode(x, geo, meta, fe)
+        return self.decode(skips, t, x, fd, feats)
+
+    def decode(self, skips, t, x, films, feats=False):
+        B, N, D = t.shape
+        S = int(round(N ** 0.5))
+        films = iter(films)
         h = t.transpose(1, 2).reshape(B, D, S, S)
         out = {"tok": h}
         for j, blk in enumerate(self.dec):

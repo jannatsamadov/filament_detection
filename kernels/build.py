@@ -91,6 +91,18 @@ def main():
     assert kfold_q2 != kfold
     (HERE / "kfold_q2").mkdir(exist_ok=True)
     (HERE / "kfold_q2" / "run.py").write_text(kfold_q2, encoding="utf-8")
+    # 11-15 (user: the join was never finely measured): the submitted map and rule with outlines joined up to
+    # 14 px instead of 6, the fold-0 join sweep's best (fixed rules 0.4177 -> 0.4215; with the selector on held-out
+    # halves 0.4381 -> 0.4437), at threshold 0.7 and 0.6; on all 707 photographs
+    q2_mixes = ('Q2_MIXES = (("q", (QSEG,)), ("qf", (QSEG, QSEG_FT)), ("q2", (QSEG2,)), ("q2f", (QSEG2, QSEG2_FT)),\n'
+                '            ("qq2", (QSEG, QSEG2)))\n')
+    assert kfold_q2.count(q2_mixes) == 1
+    for kname, one in (("kfold_q2_j7", "(0.7, 7)"), ("kfold_q2_j7b", "(0.6, 7)")):
+        tag = "qj7t" + one[1:4].replace(".", "")
+        src = with_const(kfold_q2, "ONE_SETTING = (0.6, 3)", f"ONE_SETTING = {one}")
+        src = src.replace(q2_mixes, f'Q2_MIXES = (("{tag}", (QSEG,)),)\n')
+        (HERE / kname).mkdir(exist_ok=True)
+        (HERE / kname / "run.py").write_text(src, encoding="utf-8")
 
     # v9: the user's pixel table (aug_unet/pixel_gbm.py) on top of the same merged file
     pix = (HERE / "aug_unet" / "pixel_gbm.py").read_text(encoding="utf-8")
@@ -179,6 +191,12 @@ def main():
                           for n in ("candidate_pool.py", "solar_unet.py")})
     sunet = launcher("filament-solar-unet", "solar_unet", pip="").replace("SRC = " + repr(mods), "SRC = " + repr(smods))
     assert "solar_unet.py" in sunet and "candidate_pool.py" in sunet
+    # time attention on it, fine-tuned from filament-solar-unet's better arm (aug_unet/solar_time.py, 11-15)
+    tmods = dict(smods, **{"solar_time.py": (HERE / "aug_unet" / "solar_time.py").read_text(encoding="utf-8")})
+    stime = launcher("filament-solar-time", "solar_time", pip="").replace("SRC = " + repr(mods), "SRC = " + repr(tmods))
+    assert "solar_time.py" in stime
+    (HERE / "solar_time").mkdir(exist_ok=True)
+    (HERE / "solar_time" / "run.py").write_text(stime, encoding="utf-8")
     for name, text in (("qwen_ft", qwen), ("qwen_geo", qgeo), ("yolo", yolo), ("yolo_b", yolo_b), ("qwen_seg", qseg),
                        ("qwen_seg2", qseg2), ("solar_unet", sunet),
                        ("pixnet", pixnet), ("pixnet_rot", pixnet_rot), ("pixnet_rot_smoke", pixnet_rot_smoke)):
