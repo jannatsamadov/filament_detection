@@ -127,6 +127,16 @@ def main():
     pixel_rf0 = with_const(pixel_rf, fold0_line, "PIX_FOLD0 = True")
     (HERE / "pixel_rf0").mkdir(exist_ok=True)
     (HERE / "pixel_rf0" / "run.py").write_text(pixel_rf0, encoding="utf-8")
+    # the forest with the U-Net pair as columns on its own, with its own rule and test CSV (user, 11-15)
+    pixel_rfb = with_const(pixel_rf, "PIX_B_ONLY = False", "PIX_B_ONLY = True")
+    (HERE / "pixel_rfb").mkdir(exist_ok=True)
+    (HERE / "pixel_rfb" / "run.py").write_text(pixel_rfb, encoding="utf-8")
+    # one U-Net (r50all) + one forest at test time, no YOLO (user, 11-15), and its quick plumbing check
+    pixel_rf1 = with_const(pixel_rfb, "PIX_ONE_UNET = False", "PIX_ONE_UNET = True")
+    pixel_rf1_smoke = with_const(pixel_rf1, smoke_line, "PIX_SMOKE = True")
+    for name, text in (("pixel_rf1", pixel_rf1), ("pixel_rf1_smoke", pixel_rf1_smoke)):
+        (HERE / name).mkdir(exist_ok=True)
+        (HERE / name / "run.py").write_text(text, encoding="utf-8")
     # PixNet (filament-pixnet's maps) averaged into fold 0's ensemble, and the gap filling (11-12)
     xm = (HERE / "aug_unet" / "pixnet_mix.py").read_text(encoding="utf-8")
     pixnet_mix = (kfold[:-len('if __name__ == "__main__":\n    kaggle_kfold()\n')]
@@ -241,6 +251,13 @@ def main():
     nbcc = nbc.replace("import sys\n", 'import os, sys\nos.environ["FIL_NB_CC"] = "1"\n', 1).replace(
         "filament-pixel-nbc,", "filament-pixel-nbcc,")
     assert nbcc != nbc and 'NB_LEARNER = "cls"' in nbcc
+    # the user (11-15): the 1358 columns with a learner sized for them: a larger forest, and xgboost
+    for tune in ("rf", "xgb"):
+        src = nbc.replace("import sys\n", f'import os, sys\nos.environ["FIL_NB_TUNE"] = "{tune}"\n', 1).replace(
+            "filament-pixel-nbc,", f"filament-pixel-nbc-{tune},")
+        assert src != nbc and f'FIL_NB_TUNE"] = "{tune}"' in src
+        (HERE / f"pixel_nbc_{tune}").mkdir(exist_ok=True)
+        (HERE / f"pixel_nbc_{tune}" / "run.py").write_text(src, encoding="utf-8")
     for name, text in (("pixel_nbr", nbr), ("pixel_nbr_smoke", nbr_smoke), ("pixel_nbcc", nbcc)):
         (HERE / name).mkdir(exist_ok=True)
         (HERE / name / "run.py").write_text(text, encoding="utf-8")

@@ -87,6 +87,12 @@ ARM_COLS["nbcc"] = np.r_[0:len(OLD) + 3, len(OLD) + 3:BASE_N:3]
 ARM_TARGET = {"nb": "share", "nb_count": "count", "ctrl": "share", "nbc": "share", "ctrlc": "share", "nbcr": "share",
               "nbcc": "share"}
 NB_CC = os.environ.get("FIL_NB_CC") == "1"     # kernel filament-pixel-nbcc (with NB_LEARNER = "cls")
+# the user (11-15): the 1358 columns need a learner sized for them, not the 35-column forest's settings
+# (100 trees, sqrt = 37 columns per split, leaves of 50). Kernels filament-pixel-nbc-rf / -xgb, the classifier's rows
+NB_TUNE = os.environ.get("FIL_NB_TUNE", "")
+RF_TUNED = dict(n_estimators=300, max_samples=0.1, min_samples_leaf=20, max_features=0.1)   # 136 columns per split
+XGB = dict(n_estimators=400, max_depth=8, learning_rate=0.08, subsample=0.7, colsample_bytree=0.3, min_child_weight=5,
+           max_bin=64, tree_method="hist")
 ARMS = ("ctrl", "nb", "nb_count") if NB_LEARNER == "reg" else ("ctrlc", "nbc")
 MAIN_ARM = "nb" if NB_LEARNER == "reg" else "nbc"
 TAG = "nb" if NB_LEARNER == "reg" else "nbc"
@@ -94,6 +100,8 @@ if NB_ROT:                                    # pixel_nbc (same rows, same fores
     ARMS, MAIN_ARM, TAG = ("nbcr",), "nbcr", "nbcr"
 if NB_CC:                                     # its control is pixel_nbc's ctrlc and nbc: same rows, same forest
     ARMS, MAIN_ARM, TAG = ("nbcc",), None, "nbcc"
+if NB_TUNE:                                   # its control is pixel_nbc's nbc: same rows, the default forest
+    ARMS, MAIN_ARM, TAG = ("nbc",), None, f"nbc_{NB_TUNE}"
 TAG += "_smoke" if SMOKE else ""
 MAPS = (Path("/tmp") if run.ON_KAGGLE else WORK) / f"{TAG}_maps"
 ROT_SLOTS_OF = {}                             # file -> per slot (other file, gap in days) or None
@@ -293,8 +301,13 @@ def rows_job(f):
 def fit(X, t, w):
     """Regression on the soft target, or (cls) a classifier on 0/1 labels with their weights."""
     if NB_LEARNER == "cls":
+        if NB_TUNE == "xgb":
+            from xgboost import XGBClassifier
+            return XGBClassifier(**{**XGB, "n_estimators": 5 if SMOKE else XGB["n_estimators"]}, n_jobs=-1,
+                                 random_state=0).fit(X, t, sample_weight=w)
         from sklearn.ensemble import RandomForestClassifier
-        return RandomForestClassifier(**RF, n_jobs=-1, random_state=0).fit(X, t, sample_weight=w)
+        params = {**RF_TUNED, "n_estimators": 5 if SMOKE else RF_TUNED["n_estimators"]} if NB_TUNE == "rf" else RF
+        return RandomForestClassifier(**params, n_jobs=-1, random_state=0).fit(X, t, sample_weight=w)
     from sklearn.ensemble import RandomForestRegressor
     return RandomForestRegressor(**RF, n_jobs=-1, random_state=0).fit(X, t, sample_weight=w)
 
@@ -472,6 +485,8 @@ def main(procs):
     # 3. maps of the validation photographs
     for m in MODELS.values():
         m.n_jobs = 1
+        if hasattr(m, "get_booster"):                 # xgboost reads its own thread count, not the attribute
+            m.get_booster().set_param({"nthread": 1})
     pool = mp.Pool(procs, initializer=G.pix_one_thread) if procs > 1 else None
     parts = []
     for i, p in enumerate((pool.imap if pool else map)(val_job, val_files)):

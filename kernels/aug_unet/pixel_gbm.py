@@ -50,6 +50,14 @@ PIX_SHOW = 3                                  # fold-0 photographs whose maps ar
 PIX_SMOKE = False                             # kernels/build.py sets this in pixel_smoke/run.py
 PIX_LEARNER = "gbm"                           # "rf" in pixel_rf/run.py: a random forest on the same table (user, 11-12)
 PIX_FOLD0 = False                             # pixel_rf0/run.py: fold 0's classifiers only, its 141 maps tarred out (11-14)
+# pixel_rfb/run.py (user, 11-15): the forest with the U-Net pair as columns (pixB) on its own, as a submission of
+# its own: no pixA forest and no mixes; its 25-column rule fitted on its 707 out-of-fold maps, then its test CSV
+PIX_B_ONLY = False
+# pixel_rf1/run.py (user, 11-15: "1 U-Net + 1 RF, why ten U-Nets?"): at test time ONE U-Net (r50all, trained on all
+# 707 photographs) and ONE forest (trained on all 707), no YOLO; the 21-number rule. In training the forest's rows
+# read each photograph's own fold R50 (the model that did not see it), so it learns from honest U-Net maps
+PIX_ONE_UNET = False
+PIX_ONE_SETTING = (0.5, 12)                   # the forest's maps want a wider join (fold 0: 0.398 -> 0.441 with it)
 PIX_RF = dict(n_estimators=100, max_samples=0.1, min_samples_leaf=50, max_features="sqrt")
 PIX_FEAT_A = ["x_west", "y_north", "rho", "mu", "sin_lat", "lon_cm", "omega_rot", "b0", "year", "hour",
               "station", "I", "I_over_disk_median", "contrast_mu"]
@@ -171,10 +179,15 @@ def pix_rows(X, t2d, rng):
     return Xr, y, wr
 
 
+def unet_variant(fold):
+    """The U-Net map the forest reads for a photograph of this fold: the pair, or (one-U-Net mode) the fold's R50."""
+    return f"{K.FAMILIES['r50'][fold]}/{K.VIEW}" if PIX_ONE_UNET else f"{K.PAIR[fold]}/{K.VIEW}"
+
+
 def pix_val_inputs(d, cache, f, stem, fold, split="val"):
     img = np.asarray(np.load(Path(cache) / f"{split}_img.npy", mmap_mode="r")[f])
-    pmap = P.load_map(Path(d), f"{K.PAIR[fold]}/{K.VIEW}", split, stem)
-    return img, pmap, PIX_YOLO.get(fold, {}).get((split, stem), [])
+    pmap = P.load_map(Path(d), unet_variant(fold), split, stem)
+    return img, pmap, [] if PIX_ONE_UNET else PIX_YOLO.get(fold, {}).get((split, stem), [])
 
 
 def pix_row_job(job):
@@ -219,17 +232,25 @@ def pix_pred_job(job):
     if kind == "val":
         img, pmap, yinst = pix_val_inputs(d, cache, f, stem, fold)
         X = pix_features(img, stem, pmap, yinst)
-        pa = PIX_MODELS["A"][fold].predict_proba(X[:, PIX_COLS_A])[:, 1]
+        pa = None if PIX_B_ONLY else PIX_MODELS["A"][fold].predict_proba(X[:, PIX_COLS_A])[:, 1]
         pb = PIX_MODELS["B"][fold].predict_proba(X)[:, 1]
     else:
         img = cv2.imread(str(Path(test_dir) / f"{stem}.jpeg"), cv2.IMREAD_GRAYSCALE)
         pa, pb = 0.0, 0.0
+        if PIX_ONE_UNET:                           # one U-Net, one forest
+            t0 = time.time()
+            X = pix_features(img, stem, P.load_map(Path(d), f"r50all/{K.VIEW}", "test", stem), [])
+            pb = PIX_MODELS["B"]["all"].predict_proba(X)[:, 1]
+            pix_write(d, "pixB", kind, stem, pb)
+            return stem, time.time() - t0
         for k in range(5):
             X = pix_features(img, stem, P.load_map(Path(d), f"{K.PAIR[k]}/{K.VIEW}", "test", stem),
                              PIX_YOLO.get(k, {}).get(("test", stem), []))
-            pa = pa + PIX_MODELS["A"][k].predict_proba(X[:, PIX_COLS_A])[:, 1] / 5.0
+            if not PIX_B_ONLY:
+                pa = pa + PIX_MODELS["A"][k].predict_proba(X[:, PIX_COLS_A])[:, 1] / 5.0
             pb = pb + PIX_MODELS["B"][k].predict_proba(X)[:, 1] / 5.0
-    pix_write(d, "pixA", kind, stem, pa)
+    if not PIX_B_ONLY:
+        pix_write(d, "pixA", kind, stem, pa)
     pix_write(d, "pixB", kind, stem, pb)
     return stem
 
@@ -292,6 +313,36 @@ def pix_ens0_frames(d, t0, variant, tag, imap, yolo):
     return K.add_yolo(ens, [yolo[0]] * len(ens), "val")
 
 
+def pix_b_only(d, out, truth, folds, yolo, imap, test_files, res, log, t_start):
+    """The forest with the U-Net pair as columns, alone: its fixed-chain grid and its 25-column rule, both out of
+    fold on all 707 photographs, then the rule fitted on all of them and the test CSV (maps averaged over the five
+    folds' forests, each reading its own fold's U-Net pair and YOLO)."""
+    vf = lambda n: "pixB/d4"
+    g = np.stack(list(imap(K.grid_job, [(str(d), vf(n), stem, sets) for n, t in enumerate(truth)
+                                        for _, stem, sets in t["frames"]])))
+    pq = P.pq_of(g.sum(axis=0))
+    i, j, a = np.unravel_index(np.argmax(pq), pq.shape)
+    res["oof_grid_pixB"] = dict(point=[P.THRESH[i], P.MERGE[j], P.MIN_AREA[a]], **K.summary(g[:, i, j, a].sum(axis=0)))
+    log("pixB fixed chain", res["oof_grid_pixB"])
+    # one-U-Net mode has no YOLO at test time, so its rule reads the 21 numbers, not 25
+    cols, ytest = (K.GEO_COLS, None) if PIX_ONE_UNET else (K.GEO_YOLO_COLS, yolo)
+    fr = pix_rule_frames(d, truth, vf, "pixB", imap, yolo, folds)
+    oof = K.rule_oof(fr, folds, cols)
+    res["rule_oof_pixB"] = dict(columns=len(cols), one_setting=list(C.ONE_SETTING), all_707=K.summary(oof.sum(axis=0)),
+                                fold0_141=K.summary(oof[folds == 0].sum(axis=0)))
+    log("pixB rule, out of fold", res["rule_oof_pixB"])
+    final = K.fit(fr, np.arange(len(fr)), cols)
+    cut_i = int(np.argmax(K.pq_of(K.counts_at_cuts(fr, K.score(final, fr, cols)).sum(axis=0))))
+    cut = float(C.POOL_CUTS[cut_i])
+    name = "submission_rf1_unet1_rule21.csv" if PIX_ONE_UNET else "submission_rf_pixB_rule_geo_yolo.csv"
+    res["file"] = K.write_csv(d, "pixB/d4", test_files, out / name, final, cut, cols, yolo=ytest)
+    res["file"].update(cut=cut, verify=K.verify(out / name))
+    res["minutes"] = round((time.time() - t_start) / 60, 1)
+    json.dump(res, open(out / ("pixel_rf1.json" if PIX_ONE_UNET else "pixel_rfb.json"), "w"), indent=1, default=float)
+    print(json.dumps(res, indent=1, default=float), flush=True)
+    return res
+
+
 def pixel_main(src, d, out, procs, smoke=False):
     global PIX_ITERS
     d, out = Path(d), Path(out)
@@ -307,6 +358,8 @@ def pixel_main(src, d, out, procs, smoke=False):
             PIX_N[k] //= 10
     # a classifier's probabilities may want a lower threshold than a U-Net's
     P.THRESH = (0.15, 0.2, 0.25) + tuple(t for t in P.THRESH if t > 0.25)
+    if PIX_ONE_UNET:            # before any worker forks: the candidate pool marks its outlines with this setting
+        C.ONE_SETTING = PIX_ONE_SETTING
     log("models:", P.extract(src, d))
     PIX_YOLO.update(K.load_yolo(src))
     if smoke:
@@ -341,18 +394,25 @@ def pixel_main(src, d, out, procs, smoke=False):
     auc = {"pixA": [], "pixB": [], "unet_p_alone": []}
     for k in ((0,) if PIX_FOLD0 else range(5)):
         tr, te = row_fold != k, row_fold == k
-        PIX_MODELS["A"][k] = pix_fit(X[tr], y[tr], w[tr], PIX_COLS_A, k)
+        if not PIX_B_ONLY:
+            PIX_MODELS["A"][k] = pix_fit(X[tr], y[tr], w[tr], PIX_COLS_A, k)
+            auc["pixA"].append(pix_auc(y[te], w[te], PIX_MODELS["A"][k].predict_proba(X[te][:, PIX_COLS_A])[:, 1]))
         PIX_MODELS["B"][k] = pix_fit(X[tr], y[tr], w[tr], PIX_COLS_B, k)
-        auc["pixA"].append(pix_auc(y[te], w[te], PIX_MODELS["A"][k].predict_proba(X[te][:, PIX_COLS_A])[:, 1]))
         auc["pixB"].append(pix_auc(y[te], w[te], PIX_MODELS["B"][k].predict_proba(X[te])[:, 1]))
         auc["unet_p_alone"].append(pix_auc(y[te], w[te], X[te][:, PIX_FEAT_B.index("unet_p")]))
-        log(f"fold {k}: pixel AUC", {a: v[-1] for a, v in auc.items()})
+        log(f"fold {k}: pixel AUC", {a: v[-1] for a, v in auc.items() if v})
     res["pixel_auc_oof"] = auc
+    if PIX_ONE_UNET:                               # the one forest the test photographs go through
+        t_fit = time.time()
+        PIX_MODELS["B"]["all"] = pix_fit(X, y, w, PIX_COLS_B, 99)
+        res["fit_minutes_all"] = round((time.time() - t_fit) / 60, 1)
+        log("forest on all 707 photographs", res["fit_minutes_all"], "min")
     rng = np.random.default_rng(0)
     te = np.flatnonzero(row_fold == 0)
     sub = rng.choice(te, min(300000, te.size), replace=False)
-    res["importance_pixA_fold0"] = pix_importance(PIX_MODELS["A"][0], X[sub], y[sub], w[sub], PIX_COLS_A, PIX_FEAT_A, rng)
-    log("importance", list(res["importance_pixA_fold0"]["increase"].items())[:12])
+    if not PIX_B_ONLY:
+        res["importance_pixA_fold0"] = pix_importance(PIX_MODELS["A"][0], X[sub], y[sub], w[sub], PIX_COLS_A, PIX_FEAT_A, rng)
+        log("importance", list(res["importance_pixA_fold0"]["increase"].items())[:12])
     del X, y, w
     gc.collect()
 
@@ -369,9 +429,14 @@ def pixel_main(src, d, out, procs, smoke=False):
     jobs = [("val", str(d), stem, n, t["cache"], f, test_dir) for n, t in enumerate(truth) for f, stem, _ in t["frames"]
             if n == 0 or not PIX_FOLD0]
     jobs += [] if PIX_FOLD0 else [("test", str(d), s, -1, "", -1, test_dir) for s in test_stems]
-    for i, _ in enumerate(imap(pix_pred_job, jobs)):
+    test_sec = []
+    for i, r in enumerate(imap(pix_pred_job, jobs)):
+        if isinstance(r, tuple):                    # one-U-Net mode: seconds of table + forest for a test photograph
+            test_sec.append(r[1])
         if i % 100 == 0:
             log(f"maps {i}/{len(jobs)}")
+    if test_sec:
+        res["test_seconds_per_photo_table_and_forest_1_core"] = round(float(np.median(test_sec)), 2)
     pool.close() if pool else None
     PIX_MODELS.clear()
     gc.collect()
@@ -390,6 +455,8 @@ def pixel_main(src, d, out, procs, smoke=False):
     pool = mp.Pool(procs) if procs > 1 else None
     imap = pool.imap if pool else map
     log("maps written")
+    if PIX_B_ONLY:
+        return pix_b_only(d, out, truth, folds, yolo, imap, test_files, res, log, t_start)
 
     # 4. PQ of each map, and of the pair with pixA averaged in, all out-of-fold at one grid point
     for wt in PIX_MIX_W:
