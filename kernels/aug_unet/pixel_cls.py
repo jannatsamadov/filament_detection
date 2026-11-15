@@ -66,7 +66,9 @@ for tar, arms in ((KER / "pixel_nb/out_kaggle/dump_nb.tar",
                   (KER / "pixel_nbc/out_kaggle/dump_nbc.tar",
                    (("ctrlc", "RF cls: 35 columns, same rows (control)"), ("nbc", "RF cls: + 12 px neighbours (1358 col.)"))),
                   (KER / "pixel_nbr/out_kaggle/dump_nbcr.tar",
-                   (("nbcr", "RF cls: neighbours + rotation (2056 col.)"),))):
+                   (("nbcr", "RF cls: neighbours + rotation (2056 col.)"),)),
+                  (KER / "pixel_nbcc/out_kaggle/dump_nbcc.tar",
+                   (("nbcc", "RF cls: neighbours, no positions (478 col.)"),))):
     if tar.exists():
         for arm, shown in arms:
             DUMPS[f"n_{arm}"] = (tar, arm)
