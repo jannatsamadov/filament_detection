@@ -73,8 +73,14 @@ for tar, arms in ((KER / "pixel_nb/out_kaggle/dump_nb.tar",
         for arm, shown in arms:
             DUMPS[f"n_{arm}"] = (tar, arm)
             MODELS[shown] = ((f"n_{arm}",), (1,))
+# PixNet with the user's 35 columns as channels, and with the rotation channels too (filament-pixnet-rot, 11-15)
+for arm, shown in (("table", "PixNet + 35 columns"), ("tablerot", "PixNet + 35 columns + rotation")):
+    tar = KER / f"pixnet_rot/out_kaggle/dump_pixnet_{arm}.tar"
+    if tar.exists():
+        DUMPS[f"p_{arm}"] = (tar, "val_plain")
+        MODELS[shown] = ((f"p_{arm}",), (1,))
 T_FIXED = 0.5
-BAND = 16                                   # px at 2048: the "hard" pixels are expert pixels and those this close to them
+BAND = 16                                  # px at 2048: the "hard" pixels are expert pixels and those this close to them
 
 
 class Dumps:

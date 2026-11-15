@@ -174,8 +174,13 @@ def main():
                                 env=prot_env + 'os.environ["FIL_PIXNET_SMOKE"] = "1"\n').replace(
         "SRC = " + repr(mods), "SRC = " + repr(pmods))
     assert "pixel_nb.py" in pixnet_rot and "pixel_nb.py" in pixnet_rot_smoke
+    # one compact network for the whole disk, to the user's design (aug_unet/solar_unet.py, 11-15): one arm per T4
+    smods = dict(mods, **{n: (HERE / "aug_unet" / n).read_text(encoding="utf-8")
+                          for n in ("candidate_pool.py", "solar_unet.py")})
+    sunet = launcher("filament-solar-unet", "solar_unet", pip="").replace("SRC = " + repr(mods), "SRC = " + repr(smods))
+    assert "solar_unet.py" in sunet and "candidate_pool.py" in sunet
     for name, text in (("qwen_ft", qwen), ("qwen_geo", qgeo), ("yolo", yolo), ("yolo_b", yolo_b), ("qwen_seg", qseg),
-                       ("qwen_seg2", qseg2),
+                       ("qwen_seg2", qseg2), ("solar_unet", sunet),
                        ("pixnet", pixnet), ("pixnet_rot", pixnet_rot), ("pixnet_rot_smoke", pixnet_rot_smoke)):
         (HERE / name).mkdir(exist_ok=True)
         (HERE / name / "run.py").write_text(text, encoding="utf-8")
