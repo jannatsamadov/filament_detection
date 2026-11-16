@@ -128,8 +128,10 @@ def morph(cut):
              for f in pickle.load(open(o / f"filnet_phys_d4_frames_f{k}.pkl", "rb"))]
     rule = S._fit(other, "X", True, 0)
     f0 = TD.folds()[0]
-    want = ["20140609195854Bh", "20120722171034Mh"]
-    want = [s for s in want if s in f0["stems"]] or [f0["stems"][5], f0["stems"][40]]
+    # the two fold-0 photographs with three experts and the most outlines
+    order = sorted(range(len(f0["stems"])), key=lambda i: (-len(f0["sets"].get(i, [])),
+                                                           -sum(len(c) for c in f0["sets"].get(i, []))))
+    want = [f0["stems"][i] for i in order[:2]]
     maps = {}
     with tarfile.open(ROOT / "kernels" / "filnet" / "out_kaggle" / "dump_filnet_phys.tar") as t:
         for m in t.getmembers():
