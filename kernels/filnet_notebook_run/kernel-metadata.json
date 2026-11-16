@@ -14,7 +14,8 @@
   ],
   "kernel_sources": [
     "jannatsamadov/filament-filnet",
-    "jannatsamadov/filament-filnet-b"
+    "jannatsamadov/filament-filnet-b",
+    "jannatsamadov/filament-filnet-c"
   ],
   "model_sources": []
 }

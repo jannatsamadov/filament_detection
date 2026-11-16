@@ -14,6 +14,7 @@ The submitted model is **FilNet**: one family of U-Nets trained from random init
 | | weights | initialisation | validation PQ | public test PQ |
 |---|---|---|---|---|
 | **FilNet, three fold models + selection rule (submitted)** | 17.6 M each | from scratch | **0.451** (out of fold, 423 photographs) | **0.39** |
+| FilNet, five fold models + selection rule ([notebook](notebooks/filnet_pipeline.ipynb)) | 17.6 M each | from scratch | 0.444 (out of fold, 707 photographs) | 0.39 |
 | U-Net ResNet-50 + the same rule, the same photographs | 32.5 M | ImageNet | 0.452 | 0.38 |
 | ensemble of 16 ImageNet-initialised models ([`notebooks/pipeline.ipynb`](notebooks/pipeline.ipynb)) | – | ImageNet | 0.458 (fold 0, nested) | 0.39 |
 
@@ -77,6 +78,7 @@ jupyter nbconvert --to notebook --execute notebooks/filnet_pipeline.ipynb
 ```
 
 - The notebook downloads the fold models' probability maps from the public Kaggle kernels with the Kaggle CLI, so no GPU is needed. It takes about half an hour on 4 CPU cores.
+- Both FilNet files were submitted and both score 0.39 on the public test set. The executed notebook in this repository was run on Kaggle and builds the five-model file (`submission_filnet5_rule21.csv`, MD5 `f6e98d5ca4376d94364d5ea64ef96162`). The three-model file described in the report was built from the first three fold models with the same code (`kernels/aug_unet/filnet_folds.py`, scikit-learn 1.9.1); on Kaggle (scikit-learn 1.6.1) the rule chooses a slightly different cut, so the files are not identical byte for byte.
 - To retrain a fold, run `python kernels/build.py`, then `kaggle kernels push -p kernels/filnet` (fold 0), `kernels/filnet_b` (folds 1–2) or `kernels/filnet_c` (folds 3–4). Each kernel trains two models side by side on Kaggle's two T4 GPUs.
 
 ## Acknowledgment
