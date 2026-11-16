@@ -4,14 +4,20 @@ The 21-number rule reads hand-made numbers of each candidate. Here the decision 
 features: FilNet's trunk is frozen, its feature maps at every size are averaged inside each candidate and in a
 ring around it, and a small head (an MLP) learns each candidate's mean matched IoU from them. The trunk and the
 head are then one model: frame -> channels -> trunk -> map -> candidates -> head -> kept filaments.
-Measured leave-one-fold-out exactly as the rule is, on the same candidates:
-  rule       gradient-boosted trees on the 21 numbers                    (what the submitted file uses)
-  head       MLP on the network's features                               (the selector inside the model)
-  head+21    MLP on the features and the 21 numbers
-  trees+21   gradient-boosted trees on the features and the 21 numbers
+The trunk's features belong to one fold model (two trained networks do not share their channels), so a head is
+fitted per fold model, on that model's own unseen photographs: four fifths of the fold's validation photographs
+for the remaining fifth. The rule's 21 numbers mean the same for every model, so the rule can also be fitted on
+the other folds' rows (what the submitted file does). Every score is of a photograph the scorer never saw:
+  rule         trees on the 21 numbers, fitted on the other folds          (the submitted file's kind)
+  rule-in      trees on the 21 numbers, fitted inside the fold             (the head's control: same rows)
+  linear       ridge regression on the trunk's features, inside the fold
+  head         MLP on the trunk's features, inside the fold                (the selector inside the model)
+  head+21      MLP on the features and the 21 numbers, inside the fold
+  trees+21     trees on the features and the 21 numbers, inside the fold
+  rule+linear, rule+head   trees on the 21 numbers and the head's score as a 22nd, fitted on the other folds
     python kernels/aug_unet/filnet_head.py extract <fold>   # GPU: that fold's rows with features
     python kernels/aug_unet/filnet_head.py test             # GPU: the test candidates with every fold model's features
-    python kernels/aug_unet/filnet_head.py                  # the table -> out/filnet_head.json (and the head's CSV)
+    python kernels/aug_unet/filnet_head.py [kind]           # the table -> out/filnet_head.json; with a kind, its test CSV
 """
 import os
 os.environ.setdefault("FIL_LOCAL_GPU", "1")
@@ -167,68 +173,163 @@ class Head:
         return np.mean([n(Xn)[:, 0].numpy() for n in self.nets], 0)
 
 
+class Linear:
+    """A linear head: ridge regression on standardised features, its strength chosen by leave-one-out."""
+
+    def __init__(self, X, y):
+        from sklearn.linear_model import RidgeCV
+        self.mu, self.sd = X.mean(0), X.std(0) + 1e-6
+        self.m = RidgeCV(alphas=np.logspace(1, 5, 9)).fit((X - self.mu) / self.sd, y)
+
+    def predict(self, X):
+        return self.m.predict((X - self.mu) / self.sd) if len(X) else np.zeros(0)
+
+
+# name -> (what reads the candidate, on which numbers, fitted where)
+#   "other folds": on the other folds' rows, possible only for numbers that mean the same for every fold model
+#   "same fold":   on four fifths of the same fold's photographs for the remaining fifth -- the trunk's features
+#                  belong to one fold model, so a head can only be fitted on that model's own unseen photographs
+KINDS = {
+    "rule":        ("trees", "21 numbers", "other folds"),
+    "rule-in":     ("trees", "21 numbers", "same fold"),
+    "linear":      ("linear head", "the trunk's features", "same fold"),
+    "head":        ("MLP head", "the trunk's features", "same fold"),
+    "head+21":     ("MLP head", "the trunk's features + 21 numbers", "same fold"),
+    "trees+21":    ("trees", "the trunk's features + 21 numbers", "same fold"),
+    "rule+linear": ("trees", "21 numbers + the linear head's score", "other folds"),
+    "rule+head":   ("trees", "21 numbers + the MLP head's score", "other folds"),
+}
+
+
 def design(f, kind):
     z = f["Z"].astype(np.float32)
-    return {"rule": f["X"], "head": z, "head+21": np.hstack([z, np.nan_to_num(f["X"])]),
-            "trees+21": np.hstack([f["X"], z])}[kind]
+    if kind in ("rule", "rule-in"):
+        return f["X"]
+    if kind in ("head", "linear"):
+        return z
+    if kind == "head+21":
+        return np.hstack([z, np.nan_to_num(f["X"])])
+    if kind == "trees+21":
+        return np.hstack([f["X"], z])
+    return np.hstack([f["X"], np.asarray(f["H"][kind.split("+")[1]], np.float32)[:, None]])   # rule+head, rule+linear
 
 
 def fit(frames, kind):
     X = np.vstack([design(f, kind) for f in frames if len(f["X"])])
     y = np.concatenate([f["Y"].mean(1) if f["Y"].shape[1] else np.zeros(len(f["X"])) for f in frames if len(f["X"])])
-    if kind in ("rule", "trees+21"):
+    if KINDS[kind][0] == "trees":
         from sklearn.ensemble import HistGradientBoostingRegressor
         return HistGradientBoostingRegressor(max_iter=300, max_leaf_nodes=15, learning_rate=0.05, l2_regularization=1.0,
                                              random_state=0).fit(X, y)
-    return Head(X, y)
+    return Linear(X, y) if kind == "linear" else Head(X, y)
+
+
+def parts(n, k=5, seed=0):
+    idx = np.random.default_rng(seed).permutation(n)
+    return [np.sort(idx[j::k]) for j in range(k)]
+
+
+def oof(frames, folds, kind):
+    """Every photograph's candidates scored by a model that never saw that photograph's outlines."""
+    scores = [None] * len(frames)
+    for k in folds:
+        idx = [n for n, f in enumerate(frames) if f["fold"] == k]
+        if KINDS[kind][2] == "other folds":
+            groups = [(idx, [n for n, f in enumerate(frames) if f["fold"] != k])]
+        else:
+            groups = []
+            for part in parts(len(idx)):
+                te = [idx[j] for j in part]
+                groups.append((te, [n for n in idx if n not in set(te)]))
+        for te, tr in groups:
+            m = fit([frames[n] for n in tr], kind)
+            for n in te:
+                scores[n] = m.predict(design(frames[n], kind)) if len(frames[n]["X"]) else np.zeros(0)
+    return scores
+
+
+def per_photo(frames, scores, cut):
+    out = np.zeros((len(frames), 4))
+    for n, (f, s) in enumerate(zip(frames, scores)):
+        out[n] = S.tally([f], [s], cut, True)
+    return out
+
+
+def pq_of(c):
+    tp, fp, fn, iou = c.sum(axis=0)
+    return iou / max(tp + 0.5 * fp + 0.5 * fn, 1e-9)
+
+
+def boot(a, b, n=2000):
+    rng = np.random.default_rng(0)
+    d = []
+    for _ in range(n):
+        s = rng.integers(0, len(a), len(a))
+        d.append(pq_of(a[s]) - pq_of(b[s]))
+    return [round(float(pq_of(a) - pq_of(b)), 4), round(float(np.percentile(d, 2.5)), 4), round(float(np.percentile(d, 97.5)), 4)]
 
 
 def main():
     folds = [k for k in SRC if (OUT / f"filnet_head_rows_f{k}.pkl").exists()]
     frames = [f for k in folds for f in pickle.load(open(OUT / f"filnet_head_rows_f{k}.pkl", "rb"))]
+    for f in frames:
+        f["H"] = {}
     print(f"folds {folds}: {len(frames)} photographs, {sum(len(f['X']) for f in frames)} candidates, "
           f"{frames[0]['Z'].shape[1]} network features", flush=True)
-    res, kept = {}, {}
-    for kind in ("rule", "head", "head+21", "trees+21"):
-        scores = [None] * len(frames)
-        for k in folds:
-            m = fit([f for f in frames if f["fold"] != k], kind)
-            for n, f in enumerate(frames):
-                if f["fold"] == k:
-                    scores[n] = m.predict(design(f, kind)) if len(f["X"]) else np.zeros(0)
+    res, counts, kept = {}, {}, {}
+    for kind in KINDS:
+        t0 = time.time()
+        scores = oof(frames, folds, kind)
+        if kind in ("head", "linear"):                         # the head's score becomes a 22nd number of the rule
+            for f, s in zip(frames, scores):
+                f["H"][kind] = s
         pqs = [S.summary(S.tally(frames, scores, c, True)) for c in CUTS]
         b = int(np.argmax([r["PQ"] for r in pqs]))
         per = {k: S.summary(S.tally([f for f in frames if f["fold"] == k],
                                     [s for f, s in zip(frames, scores) if f["fold"] == k], CUTS[b], True))["PQ"] for k in folds}
-        res[kind] = dict(pqs[b], cut=float(CUTS[b]), per_fold=per)
+        counts[kind] = per_photo(frames, scores, CUTS[b])
         kept[kind] = scores
-        print(f"{kind:9s} PQ {pqs[b]['PQ']:.4f} SQ {pqs[b]['SQ']:.3f} RQ {pqs[b]['RQ']:.3f} TP {pqs[b]['TP']} FP {pqs[b]['FP']} "
-              f"FN {pqs[b]['FN']} cut {CUTS[b]:.2f}  per fold " + " ".join(f"{v:.4f}" for v in per.values()), flush=True)
+        res[kind] = dict(pqs[b], cut=float(CUTS[b]), per_fold=per, reads=KINDS[kind][1], by=KINDS[kind][0], fitted=KINDS[kind][2])
+        if kind != "rule":
+            res[kind]["minus_rule"] = boot(counts[kind], counts["rule"])
+        if kind not in ("rule", "rule-in"):
+            res[kind]["minus_rule_in"] = boot(counts[kind], counts["rule-in"])
+        print(f"{kind:12s} PQ {pqs[b]['PQ']:.4f} SQ {pqs[b]['SQ']:.3f} RQ {pqs[b]['RQ']:.3f} TP {pqs[b]['TP']} FP {pqs[b]['FP']} "
+              f"FN {pqs[b]['FN']} cut {CUTS[b]:.2f}  per fold " + " ".join(f"{v:.4f}" for v in per.values())
+              + (f"  minus rule {res[kind]['minus_rule']}" if kind != "rule" else "")
+              + (f"  minus rule-in {res[kind]['minus_rule_in']}" if "minus_rule_in" in res[kind] else "")
+              + f"  ({time.time() - t0:.0f}s)", flush=True)
         json.dump(res, open(OUT / "filnet_head.json", "w"), indent=1, default=float)
 
     tp = OUT / "filnet_head_test.pkl"
-    if tp.exists() and "--csv" in sys.argv:
+    want = [a for a in sys.argv[1:] if a in KINDS]
+    if tp.exists() and want:
+        # the test file: every fold model has its own head, fitted on all of that model's unseen photographs;
+        # a test candidate is read by each model's head on that model's features, and the answers are averaged
         t = pickle.load(open(tp, "rb"))
-        kind = "head"
-        m = fit(frames, kind)
+        kind = want[0]
+        base = kind.split("+")[1] if kind.startswith("rule+") else kind
+        heads = {k: fit([f for f in frames if f["fold"] == k], base) for k in t["folds"] if k in folds}
+        final = fit(frames, kind) if kind.startswith("rule+") else None
         cut = res[kind]["cut"]
         lines, per = [], []
         for r in t["rows"]:
+            s = []
             if len(r["X"]):
-                s = np.mean([m.predict(design(dict(X=r["X"], Z=r["Z"][k]), kind)) for k in t["folds"]], 0)
-            else:
-                s = []
+                h = np.mean([heads[k].predict(design(dict(X=r["X"], Z=r["Z"][k]), base)) for k in heads], 0)
+                s = final.predict(design(dict(X=r["X"], Z=r["Z"][t["folds"][0]], H={base: h}), kind)) if final is not None else h
             n = 0
             for rle, q in zip(r["rle"], s):
                 if q >= cut:
                     n += 1
                     lines.append(f"{r['stem']}_{n},{rle['counts'].decode('ascii')}")
             per.append(n)
-        csv = OUT / f"submission_filnet{len(t['folds'])}_head.csv"
+        csv = OUT / f"submission_filnet{len(heads)}_{kind.replace('+', '_')}.csv"
         csv.write_text("filament_id,segmentation_rle\n" + "\n".join(lines) + "\n")
         v = subprocess.run([sys.executable, str(HERE.parents[1] / "src" / "verify_submission.py"), str(csv),
                             "--test-dir", str(run.find_data()[2])], capture_output=True, text=True)
-        res["csv"] = dict(file=str(csv), rows=len(lines), per_image=round(float(np.mean(per)), 2), verify_exit=v.returncode)
+        res["csv"] = dict(file=str(csv), kind=kind, rows=len(lines), per_image=round(float(np.mean(per)), 2), cut=cut,
+                          verify_exit=v.returncode)
         print(f"{csv.name}: {len(lines)} rows, cut {cut}; verify exit {v.returncode}\n{v.stdout[-250:]}", flush=True)
         json.dump(res, open(OUT / "filnet_head.json", "w"), indent=1, default=float)
 

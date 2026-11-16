@@ -1,5 +1,5 @@
 """Figures of the FilNet report, written into report/overleaf/:
-  fig_pipeline.pdf  the submitted pipeline (drawn here)
+  fig_arch.pdf      the pipeline in one row and FilNet's internal structure (drawn here)
   fig_inputs.jpg    four of the seven input channels on a validation photograph
   fig_test.jpg      the submitted file's masks on a test photograph
   fig_morph.jpg     validation photographs: experts' outlines and FilNet's kept filaments
@@ -34,23 +34,45 @@ def arrow(ax, x0, y0, x1, y1):
     ax.annotate("", xy=(x1, y1), xytext=(x0, y0), arrowprops=dict(arrowstyle="-|>", lw=0.8, color="#333333"))
 
 
-def pipeline(n_folds, cut):
-    fig, ax = plt.subplots(figsize=(3.5, 2.35))
-    ax.set_xlim(-0.02, 1.02)
+def arch(n_folds):
+    """The pipeline in one row and, below it, FilNet's internal structure."""
+    fig, ax = plt.subplots(figsize=(3.45, 3.0))
+    ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.axis("off")
-    box(ax, 0.00, 0.62, 0.14, 0.30, "GONG\nH$\\alpha$\n2048$^2$", POST)
-    box(ax, 0.21, 0.56, 0.33, 0.42, "7 physical channels\n(no weights):\nbrightness; contrast\nto the quiet Sun;\nlocal darkness, 2 scales;\nlatitude, longitude, $\\mu$", PHYS, 4.9)
-    box(ax, 0.61, 0.56, 0.39, 0.42, f"FilNet $\\times$ {n_folds} folds\nresidual U-Net,\n17.6 M weights, trained\nfrom scratch on 512 px\nwindows; inference on the\nfull frame with D4", NET, 4.9)
-    box(ax, 0.61, 0.04, 0.39, 0.40, "mean map\n$\\downarrow$ candidates:\nthreshold 0.6, join 3 px,\narea $\\geq$ 100 px", POST, 4.9)
-    box(ax, 0.21, 0.04, 0.33, 0.40, f"selection rule\nGBM, 21 features:\nappearance,\nheliographic lat. & long.,\naxis orientation;\ncut {cut}", POST, 4.9)
-    box(ax, 0.00, 0.12, 0.14, 0.24, "masks\n(RLE)", POST)
-    arrow(ax, 0.14, 0.77, 0.21, 0.77)
-    arrow(ax, 0.54, 0.77, 0.61, 0.77)
-    arrow(ax, 0.805, 0.56, 0.805, 0.44)
-    arrow(ax, 0.61, 0.24, 0.54, 0.24)
-    arrow(ax, 0.21, 0.24, 0.14, 0.24)
-    fig.savefig(OUT / "fig_pipeline.pdf", bbox_inches="tight", pad_inches=0.02)
+    chain = [("GONG H$\\alpha$\n2048$^2$ px", POST), ("7 physical\nchannels", PHYS), (f"FilNet\n$\\times$ {n_folds} folds", NET),
+             ("mean map,\ncandidates", POST), ("selection\nrule", POST), ("masks\n(RLE)", POST)]
+    w, gap = 0.145, 0.026
+    for i, (text, col) in enumerate(chain):
+        x = i * (w + gap)
+        box(ax, x, 0.90, w, 0.092, text, col, 4.5)
+        if i:
+            arrow(ax, x - gap, 0.946, x, 0.946)
+    ax.plot([0.0, 1.0], [0.868, 0.868], color="#999999", lw=0.5)
+    h, step, top = 0.082, 0.132, 0.745
+    ys = [top - i * step for i in range(6)]
+    widths = (24, 48, 96, 192, 320, 384)
+    sizes = (2048, 1024, 512, 256, 128, 64)
+    res = ("1", "1/2", "1/4", "1/8", "1/16", "1/32")
+    lines = ["fixed arithmetic,", "no weights:", "brightness $I$", r"$c=I/\bar{I}(\mu)-1$", r"$c-\langle c\rangle_{30\,px}$",
+             r"$c-\langle c\rangle_{130\,px}$", "sin(latitude)", "longitude", r"$\mu$"]
+    box(ax, 0.0, ys[3] - 0.01, 0.225, top + h - ys[3] + 0.01, "\n".join(lines), PHYS, 4.4)
+    arrow(ax, 0.225, ys[0] + h / 2, 0.285, ys[0] + h / 2)
+    ex, ew, dx, dw = 0.285, 0.25, 0.715, 0.285
+    for i in range(5):
+        box(ax, ex, ys[i], ew, h, f"{widths[i]} ch, {1 if i == 0 else 2} block{'s' if i else ''}", NET, 4.4)
+        out = {0: " $\\to$ map", 1: " $\\to$ aux. map", 2: " $\\to$ aux. map"}.get(i, "")
+        box(ax, dx, ys[i], dw, h, f"{widths[i]} ch{out}", NET, 4.4)
+        ax.annotate("", xy=(dx, ys[i] + h / 2), xytext=(ex + ew, ys[i] + h / 2),
+                    arrowprops=dict(arrowstyle="-|>", lw=0.6, color="#777777", linestyle="dashed"))
+        ax.text((ex + ew + dx) / 2, ys[i] + h / 2 + 0.012, f"{res[i]}, {sizes[i]}$^2$", ha="center", va="bottom", fontsize=4.2)
+        arrow(ax, 0.45, ys[i], 0.45, ys[i + 1] + h)
+        arrow(ax, 0.80, ys[i + 1] + h, 0.80, ys[i])
+    box(ax, 0.40, ys[5], 0.45, h, f"{widths[5]} ch, 2 blocks; {res[5]}, {sizes[5]}$^2$", NET, 4.4)
+    legend = ["$\\downarrow$ 3$\\times$3 conv, stride 2", "$\\uparrow$ bilinear upsampling", "- - skip, concatenated",
+              "block: 2 $\\times$ (3$\\times$3 conv,", "BN, SiLU), residual"]
+    ax.text(0.0, ys[3] - 0.035, "\n".join(legend), ha="left", va="top", fontsize=4.2, linespacing=1.25)
+    fig.savefig(OUT / "fig_arch.pdf", bbox_inches="tight", pad_inches=0.02)
     plt.close(fig)
 
 
@@ -176,7 +198,9 @@ if __name__ == "__main__":
     sub = Path(sys.argv[1])
     n_folds = int(sys.argv[2]) if len(sys.argv) > 2 else 3
     cut = float(sys.argv[3]) if len(sys.argv) > 3 else 0.24
-    pipeline(n_folds, cut)
+    arch(n_folds)
+    if sub.name == 'arch':
+        sys.exit()
     test_morphology(sub)
     inputs()
     morph(cut)

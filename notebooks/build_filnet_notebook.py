@@ -63,7 +63,7 @@ SETTING = __SETTING__        # (threshold, join radius in px) of the candidates
 MIN_AREA = __MIN_AREA__      # px
 C.ONE_SETTING, C.POOL_MIN_AREA = SETTING, MIN_AREA
 VIEW = "d4"
-SUBMITTED_MD5 = "__SUBMITTED_MD5__"   # the file submitted to Kaggle; this notebook's output
+SUBMITTED_MD5 = "__SUBMITTED_MD5__"   # set when re-running: the MD5 of the file this notebook wrote on Kaggle and we submitted
 print(f"python {sys.version.split()[0]}, torch {torch.__version__}, numpy {np.__version__}, "
       f"opencv {cv2.__version__}, scikit-learn {sklearn.__version__}, on Kaggle: {ON_KAGGLE}")
 """),
@@ -234,7 +234,9 @@ name = f"submission_filnet{len(FOLDS)}_rule21.csv"
 info = K.write_csv(D, MEAN, test_files, OUT / name, final, CUT, COLS)
 ver = K.verify(OUT / name)
 md5 = hashlib.md5((OUT / name).read_bytes()).hexdigest()
-print(info, "\nMD5", md5, "\nsame as the submitted file:", md5 == SUBMITTED_MD5)
+print(info, "\nMD5", md5)
+if SUBMITTED_MD5:
+    print("same as the submitted file:", md5 == SUBMITTED_MD5)
 """),
     code(r"""
 from pycocotools import mask as mu

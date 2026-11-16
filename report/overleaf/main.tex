@@ -28,13 +28,16 @@
 % \guideStyletrue
 \guideStylefalse
 
-% Numbers of the submitted file (report/numbers: kernels/aug_unet/out/filnet_*.json and the notebook's output).
+% Numbers of the submitted file (kernels/aug_unet/out/filnet_*.json and the notebook's output).
 \newcommand{\nfolds}{three}          % fold models in the submitted file
-\newcommand{\noof}{423}              % photographs with an out-of-fold FilNet prediction
-\newcommand{\oofpq}{0.451}           % FilNet + rule, out of fold
+\newcommand{\noof}{423}              % photographs with a FilNet prediction from a model that never saw them
+\newcommand{\oofpq}{0.451}           % FilNet + rule on those photographs
 \newcommand{\ooffixed}{0.384}        % FilNet, every candidate kept
 \newcommand{\rfiftypq}{0.452}        % ImageNet ResNet-50 + rule on the same photographs
 \newcommand{\cut}{0.24}              % the rule's cut
+\newcommand{\rulegain}{$+0.067\ [+0.061,\,+0.074]$}   % rule against keeping every candidate
+\newcommand{\vsrfifty}{$-0.001\ [-0.007,\,+0.005]$}   % FilNet against the ImageNet ResNet-50
+\newcommand{\trainspan}{3--4 hours on one NVIDIA T4 GPU (88--120 epochs, 150\,000--200\,000 windows)}
 
 \begin{document}
 
@@ -65,7 +68,7 @@
 }
 
 \begin{abstract}
-    This report describes our solution to the Solar Filament Segmentation Challenge~2026, a Kaggle competition on automatic segmentation of solar filaments in GONG H-$\alpha$ observations. The submitted pipeline uses one model family, FilNet: a residual U-Net of 17.6 million weights trained from random initialisation, with no pre-trained component. Its input is the frame expressed in physical terms (contrast against the quiet Sun at the same $\mu$, darkness against the surroundings at two scales, heliographic position), and it is trained on windows centred on filaments. The maps of \nfolds{} fold models are averaged, and each connected component is kept or discarded by a learned rule. FilNet reaches a panoptic quality (PQ) of \oofpq{} on out-of-fold training photographs and 0.39 on the public test set. This equals our ensemble of sixteen ImageNet-initialised models (0.39) and, on the same photographs, an ImageNet ResNet-50 U-Net of twice its size. We show that the remaining error is one annotator's personal choice: replacing the rule by the decisions of the other experts of the same photograph does not raise PQ. We also summarise the other approaches we tested, among them a physically motivated per-pixel analysis.
+    This report describes our solution to the Solar Filament Segmentation Challenge~2026, a Kaggle competition on the automatic segmentation of solar filaments in GONG H-$\alpha$ observations. Our starting point was the physical description of a filament: a structure that is darker than the quiet Sun around it. We tested this description first with inexpensive per-pixel classifiers on a table of physical quantities, then with a per-pixel network, and finally built it into the input of a segmentation network. The submitted model, FilNet, is a residual U-Net with 17.6 million weights, trained from random initialisation without any pre-trained component. Its input is the frame expressed as contrast against the quiet Sun, darkness against the surroundings and heliographic position. The maps of \nfolds{} fold models are averaged, and a learned rule decides which connected components are kept. FilNet reaches a panoptic quality (PQ) of \oofpq{} on training photographs it did not see and 0.39 on the public test set, the same as our ensemble of sixteen ImageNet-initialised models. The report also describes the approaches that were not submitted and what we learned from them.
 \end{abstract}
 
 \maketitle
@@ -75,7 +78,9 @@
 %              INTRODUCTION            %
 % ==================================== %
 \section{Introduction}
-    This report goes over the details of our submitted solution to the Solar Filament Segmentation Challenge~2026 \cite{filament-segmentation-2026}. The challenge, launched on July~10,~2026, is organized by the Earth-Space AI Research (ESAIR) Lab\footnote{\href{https://www.esairlab.com/home}{www.esairlab.com/}}. This challenge utilizes the MAGFiLO dataset for evaluation of the segmentation algorithms \cite{ahmadzadeh2024dataset}. Sections~\ref{sec:methodology} and~\ref{sec:evaluation} describe and evaluate FilNet, the model behind our final submission. Section~\ref{sec:other} summarises the other approaches we tested: an ensemble of ImageNet-initialised networks, and a pixel-by-pixel analysis in which a classifier receives a table of physical quantities instead of an image. Throughout, we compare the models with the agreement between the experts, because many photographs were annotated by two or three experts independently. Preliminary results of this work were presented at a local conference in Azerbaijan.
+    This report goes over the details of our submitted solution to the Solar Filament Segmentation Challenge~2026 \cite{filament-segmentation-2026}. The challenge, launched on July~10,~2026, is organized by the Earth-Space AI Research (ESAIR) Lab\footnote{\href{https://www.esairlab.com/home}{www.esairlab.com/}}. This challenge utilizes the MAGFiLO dataset for evaluation of the segmentation algorithms \cite{ahmadzadeh2024dataset}.
+
+    Filaments are clouds of relatively cool and dense plasma held in the solar atmosphere by the magnetic field. In H$\alpha$ images of the disk they appear as dark, elongated structures. Our work started from this physical description rather than from a ready-made segmentation network. We asked which measurable quantities separate a filament pixel from the quiet Sun, and tested the answer in three steps: per-pixel classifiers on a table of physical quantities, a per-pixel network, and a segmentation network whose input is expressed in the same quantities. The last of these, FilNet, is the submitted model. Section~\ref{sec:methodology} describes it and Section~\ref{sec:evaluation} evaluates it. Section~\ref{sec:other} describes the other approaches, their results and the reasons for our choice. Preliminary results of this work were presented at a local conference in Azerbaijan.
 
 
 % ==================================== %
@@ -83,41 +88,43 @@
 % ==================================== %
 \section{Methodology}\label{sec:methodology}
 
-\subsection{Data and sampling}
-The training set contains 707 GONG H$\alpha$ photographs of $2048\times2048$ pixels. Of these, 411 were annotated by one expert, 145 by two and 151 by three, by 37 annotators in total. Filaments are thin: the median outline covers 1228 pixels and is about 8 pixels wide, so an error of two pixels on each edge already halves the intersection over union (IoU). We split the photographs into five folds, grouped by photograph (566 training and 141 validation photographs each). FilNet was trained on \nfolds{} folds, so that \noof{} photographs have an out-of-fold prediction from a model that never saw them. Every cut applied to them is chosen on photographs other than the ones it is scored on, or is stated otherwise.
+\subsection{Data}
+The training set contains 707 GONG H$\alpha$ photographs of $2048\times2048$ pixels. Of these, 411 were outlined by one expert, 145 by two and 151 by three. Filaments are thin: the median outline covers 1228 pixels and is about 8 pixels wide, so an error of two pixels on each edge already halves the intersection over union (IoU). We split the photographs into five folds of 141 or 143 photographs. A fold model is trained on four folds and evaluated on the fifth. FilNet was trained on \nfolds{} folds, so \noof{} photographs have a prediction from a model that never saw them. All validation results of FilNet are computed on these photographs.
 
 \subsection{Physical input channels}
-A filament is not dark in absolute terms: because of limb darkening and the chromospheric network, 32\% of the quiet-Sun pixels of a raw frame are darker than the median filament pixel. What defines a filament is that it is darker than the quiet Sun around it. We therefore express the frame in these terms before the network sees it, with fixed arithmetic and no trainable weights (Fig.~\ref{fig:inputs}). Let $I$ be the brightness and $\mu$ the cosine of the heliocentric angle. The quiet-Sun profile $\bar I(\mu)$ is the mean brightness in 48 rings of $\mu$, measured on the frame itself in two passes, the second without the pixels that deviate from the first profile by more than 12\% (filaments, sunspots, plage). The seven channels are: the brightness $I$; the contrast $c=I/\bar I(\mu)-1$, which is about $-0.2$ on a filament anywhere on the disk; the local darkness $c-\langle c\rangle_r$ for $r\approx30$ and $r\approx130$ pixels, where $\langle c\rangle_r$ is the mean of $c$ over the disk pixels within $r$; and the sine of the heliographic latitude, the longitude from the central meridian and $\mu$, computed from the disk geometry and the solar $B_0$ angle of the date. The channels are computed after the augmentation, so they stay consistent with the rotated and photometrically changed frame.
+A filament is not dark in absolute terms. Because of limb darkening and the chromospheric network, 32\% of the quiet-Sun pixels of a raw frame are darker than the median filament pixel. What defines a filament is that it is darker than the quiet Sun around it. We therefore express the frame in these terms before the network sees it, with fixed arithmetic and no trainable weights (Fig.~\ref{fig:inputs}).
+
+Let $I$ be the brightness and $\mu$ the cosine of the heliocentric angle. The quiet-Sun profile $\bar I(\mu)$ is the mean brightness in 48 rings of $\mu$. It is measured on the frame itself in two passes; the second pass leaves out the pixels that deviate from the first profile by more than 12\% (filaments, sunspots, plage). The network receives seven channels. The first is the brightness $I$. The second is the contrast $c=I/\bar I(\mu)-1$, which is about $-0.2$ on a filament anywhere on the disk. The third and fourth are the local darkness $c-\langle c\rangle_r$ for $r\approx30$ and $r\approx130$ pixels, where $\langle c\rangle_r$ is the mean of $c$ over the disk pixels within $r$. The last three are the sine of the heliographic latitude, the longitude from the central meridian, and $\mu$, computed from the disk geometry and the solar $B_0$ angle of the date.
 
 \subsection{FilNet}
-\textbf{Architecture.} FilNet is a residual U-Net \cite{ronneberger2015unet,he2016resnet} with six resolutions, from the full frame down to $1/32$, and 24, 48, 96, 192, 320 and 384 channels. The encoder has one residual block (two $3\times3$ convolutions with batch normalisation and SiLU) at full resolution and two at every coarser one, joined by strided convolutions; the decoder has one block per resolution after bilinear upsampling and concatenation with the encoder's features. It has 17.6 million weights, all initialised at random: no ImageNet and no other pre-training. Full resolution is kept because the outline of an 8-pixel-wide filament decides its IoU, and the coarsest level sees about 1000 pixels, enough to tell a filament from a sunspot group or plage.
+\textbf{Architecture.} FilNet is a residual U-Net \cite{ronneberger2015unet,he2016resnet} with six resolutions, from the full frame down to $1/32$ (Fig.~\ref{fig:arch}). The numbers of channels are 24, 48, 96, 192, 320 and 384. A block consists of two $3\times3$ convolutions with batch normalisation and the SiLU activation, and a residual connection. The encoder has one block at full resolution and two at every coarser resolution, joined by convolutions with stride 2. The decoder has one block per resolution, after bilinear upsampling and concatenation with the encoder's features. The network has 17.6 million weights, all initialised at random. Two properties of filaments guided this design. The outline of an 8-pixel-wide filament decides its IoU, so the full resolution is kept. To tell a filament from a sunspot group or from plage the network must see a large area, and the coarsest level sees about 1000 pixels.
 
-\textbf{Training.} We follow the recipe that lets U-Nets trained from scratch work on a few hundred images \cite{isensee2021nnu}. The network is trained not on whole frames but on $512\times512$ windows cut from the augmented frame, every other window centred near a filament pixel, twelve windows per step. The target of a pixel is the fraction of the photograph's experts who drew it. The loss is binary cross-entropy (positive weight 10) plus a Tversky term (weight 0.6 on false positives, 0.4 on misses), restricted to the solar disk and applied at full, $1/2$ and $1/4$ resolution (deep supervision). We use AdamW (learning rate $10^{-3}$, weight decay $10^{-2}$), two epochs of warm-up followed by a cosine decay, mixed precision, and keep the exponential moving average of the weights as the model. Augmentation consists of rotations by any angle about the disk centre, mirrors, and photometric changes (contrast, gamma, brightness, blur or sharpening, noise and JPEG re-compression) within the ranges we measured between GONG frames. One fold takes 3--4 hours on one NVIDIA T4 GPU (88--120 epochs, 150\,000--200\,000 windows).
+\textbf{Training.} We follow the recipe that allows U-Nets to be trained from scratch on a few hundred images \cite{isensee2021nnu}. The network is trained on $512\times512$ windows cut from the augmented frame, twelve windows per step, every other window centred near a filament pixel. The target of a pixel is the fraction of the photograph's experts who marked it. The loss is the binary cross-entropy (positive weight 10) plus a Tversky term (weight 0.6 on false positives and 0.4 on misses). It is computed on the solar disk at full, $1/2$ and $1/4$ resolution. We use AdamW (learning rate $10^{-3}$, weight decay $10^{-2}$) with two epochs of warm-up and a cosine decay, and keep the exponential moving average of the weights as the model. The augmentation consists of rotations by any angle about the disk centre, mirrors, and photometric changes (contrast, gamma, brightness, blur or sharpening, noise and JPEG compression) within the ranges measured between GONG frames. The input channels are computed after the augmentation. Training one fold model takes \trainspan.
 
-\textbf{Inference.} A fold model predicts the whole $2048\times2048$ frame in one pass (0.3\,s on a T4) and averages its predictions over the eight symmetries of the square (D4), the position channels being recomputed for each view. The maps of the \nfolds{} fold models are averaged.
+\textbf{Inference.} A fold model predicts the whole $2048\times2048$ frame in one pass (0.3\,s on a T4). Its predictions are averaged over the eight symmetries of the square, with the position channels recomputed for each of them. The maps of the \nfolds{} fold models are then averaged.
 
-\subsection{Post-processing and selection rule}
-The mean map is thresholded at 0.6; pieces closer than 3 pixels are grouped into one candidate filament (the grouping labels only the original pixels), and candidates smaller than 100 pixels are dropped. None of 32 threshold and grouping settings scored more than 0.002 higher.
+\subsection{Candidates and selection rule}
+The mean map is thresholded at 0.6. Pieces closer than 3 pixels are grouped into one candidate filament, and candidates smaller than 100 pixels are dropped. We compared 32 settings of the threshold and the grouping distance; none was more than 0.002 better.
 
-A candidate adds $\frac{1}{2}$ to the denominator of PQ (Eq.~\ref{eq:pq}) and adds its IoU to the numerator only if it is matched, so keeping it pays only if its probability of being matched times its expected IoU exceeds PQ$/2$. We therefore train gradient-boosted regression trees (scikit-learn HistGradientBoosting \cite{pedregosa2011scikit}, 300 trees of 15 leaves, learning rate 0.05) to predict the mean matched IoU of each candidate from 21 features: its area; the statistics of the probability inside it and on its rim; its elongation; its contrast against a surrounding ring; the threshold settings that produced it; its heliographic latitude and longitude from the central meridian; and the orientation of its long axis ($\cos2\phi$, $\sin2\phi$). The rule is trained on the out-of-fold candidates, and candidates with a predicted IoU below \cut{} are discarded. The masks are encoded as COCO run-length strings. Fig.~\ref{fig:pipeline} summarises the pipeline, and Fig.~\ref{fig:test} shows the submitted masks on a test photograph.
+Not every candidate should be submitted. In the PQ metric (Eq.~\ref{eq:pq}) a candidate adds $\frac{1}{2}$ to the denominator, and it adds its IoU to the numerator only if it is matched. Keeping a candidate therefore pays only if its probability of being matched times its expected IoU exceeds PQ$/2$. We train gradient-boosted regression trees \cite{pedregosa2011scikit} to predict this product for each candidate from 21 features: its area, the statistics of the probability inside it and on its rim, its elongation, its contrast against a surrounding ring, its heliographic latitude and longitude, and the orientation of its long axis. The rule is trained on candidates of photographs that the fold models did not see. Candidates with a predicted value below \cut{} are discarded. Fig.~\ref{fig:test} shows the submitted masks on a test photograph.
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=\columnwidth]{fig_pipeline.pdf}
-  \caption{The submitted pipeline.}
-  \label{fig:pipeline}
+  \includegraphics[width=\columnwidth]{fig_arch.pdf}
+  \caption{The submitted pipeline (top row) and the internal structure of FilNet (below). Each box of the network is a group of residual blocks; ``ch'' is the number of channels. The two auxiliary maps are used only in the training loss.}
+  \label{fig:arch}
 \end{figure}
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=\columnwidth]{fig_inputs.jpg}
-  \caption{Four of FilNet's seven input channels on a validation photograph (experts' outlines in green on the first panel).}
+  \includegraphics[width=0.82\columnwidth]{fig_inputs.jpg}
+  \caption{Four of FilNet's seven input channels on a validation photograph. The experts' outlines are drawn in green on the first panel.}
   \label{fig:inputs}
 \end{figure}
 
 \begin{figure*}[t]
   \centering
-  \includegraphics[width=0.92\textwidth]{fig_test.jpg}
+  \includegraphics[width=0.74\textwidth]{fig_test.jpg}
   \caption{The submitted masks (orange) on the test photograph with the most filaments: the full disk and two close-ups.}
   \label{fig:test}
 \end{figure*}
@@ -132,95 +139,97 @@ A prediction $p$ matches an annotation $g$ if IoU$(p,g)>0.5$, and
 \begin{equation}\label{eq:pq}
 \mathrm{PQ}=\frac{\sum_{(p,g)\in\mathrm{TP}}\mathrm{IoU}(p,g)}{|\mathrm{TP}|+\frac12|\mathrm{FP}|+\frac12|\mathrm{FN}|},
 \end{equation}
-where the counts are pooled over every annotation set of every photograph \cite{kirillov2019panoptic}. Our scorer reproduces the organisers' counts exactly. With 141 validation photographs the sampling noise of PQ is about $\pm0.02$, so we report differences between models with 95\% bootstrap intervals over photographs. As a reference we score one expert against another on the same photographs: two experts agree at PQ~0.348.
+where the counts are summed over all photographs and all experts \cite{kirillov2019panoptic}. Our scorer reproduces the organisers' counts exactly. With 141 validation photographs the sampling noise of PQ is about $\pm0.02$. We therefore report differences between models with 95\% bootstrap intervals over photographs. As a reference, we score one expert against another on the same photographs: two experts agree at PQ~0.348.
 
 \subsection{Results}
-Table~\ref{tab:dev} compares FilNet with the other networks we trained. Our earlier networks trained from scratch stayed at 0.38--0.41, well below an ImageNet-initialised U-Net. FilNet closes this gap: out of fold on \noof{} photographs it reaches \oofpq{}, against \rfiftypq{} for a ResNet-50 U-Net with the same rule on the same photographs (difference $-0.001$ $[-0.007,+0.005]$), and on the test set it scores 0.39, as our sixteen-model ensemble does. Table~\ref{tab:abl} gives the effect of single components, and Fig.~\ref{fig:morph} compares FilNet's filaments with the experts' on validation photographs.
+Table~\ref{tab:dev} lists the models in the order in which we built them. The per-pixel models stay well below the segmentation networks, and our earlier networks trained from scratch stay below a U-Net initialised from ImageNet. FilNet closes this gap. On \noof{} photographs it reaches PQ~\oofpq{}, and a ResNet-50 U-Net with the same rule reaches \rfiftypq{} on the same photographs. On the public test set FilNet scores 0.39, as the ensemble of sixteen models does. Table~\ref{tab:abl} gives the effect of single components.
 
 \begin{table}[t]
-\caption{Networks compared. Val.: fold~0, D4, the rule fitted on one half of the photographs and scored on the other. $^a$fixed rules, no selection rule. $^b$out of fold on \noof{} photographs. $^c$fold-0 ensemble, nested cut.}
+\caption{The models in the order in which they were built. Val.: PQ on training photographs that the model did not see. Test: PQ on the public test set. $^\dagger$Without the selection rule.}
 \label{tab:dev}
 \centering\small
 \begin{tabular}{@{}lccc@{}}
 \toprule
 Model (weights) & Init. & Val. & Test \\
 \midrule
-Per-pixel dilated network (6.2\,M) & scratch & 0.379$^a$ & -- \\
-Full-frame U-Net, attention (10.8\,M) & scratch & 0.406 & -- \\
-FilNet, brightness and position only & scratch & 0.430 & -- \\
-FilNet, one fold model (17.6\,M) & scratch & 0.438 & -- \\
-U-Net ResNet-50 (32.5\,M) & ImageNet & 0.442 & 0.38 \\
+Random forest on the per-pixel table & -- & 0.26 & -- \\
+PixNet, per-pixel network (6.2\,M) & scratch & 0.38$^\dagger$ & -- \\
+Full-frame U-Net, attention (10.8\,M) & scratch & 0.41 & -- \\
+U-Net ResNet-50 (32.5\,M) & ImageNet & 0.44 & 0.38 \\
+U-Net ResNet-50 + random forest & ImageNet & 0.44 & 0.37 \\
+Ensemble of 16 models & ImageNet & 0.46 & 0.39 \\
 \midrule
-\textbf{FilNet, \nfolds{} fold models (submitted)} & scratch & \textbf{\oofpq}$^b$ & \textbf{0.39} \\
-Ensemble of 16 models (Sect.~\ref{sec:other}) & ImageNet & 0.458$^c$ & 0.39 \\
+FilNet without physical channels (17.6\,M) & scratch & 0.43 & -- \\
+FilNet, one fold model (17.6\,M) & scratch & 0.44 & -- \\
+\textbf{FilNet, \nfolds{} fold models (submitted)} & scratch & \textbf{\oofpq} & \textbf{0.39} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{table}[t]
-\caption{Effect of single components: $\Delta$PQ with 95\% bootstrap intervals. OOF = out of fold; ens.\ = the fold-0 ensemble of Sect.~\ref{sec:other}.}
+\caption{Effect of single components on validation PQ, with 95\% bootstrap intervals.}
 \label{tab:abl}
 \centering\small
 \begin{tabular}{@{}lc@{}}
 \toprule
 Change & $\Delta$PQ \\
 \midrule
-Selection rule on FilNet's candidates (OOF) & $+0.067\ [+0.061,\,+0.074]$ \\
-Physical channels, with the rule (fold~0) & $+0.008\ [-0.001,\,+0.017]$ \\
-FilNet vs.\ ImageNet ResNet-50 (OOF) & $-0.001\ [-0.007,\,+0.005]$ \\
-FilNet added to the 16-model ensemble (ens.) & $+0.006\ [-0.000,\,+0.013]$ \\
+Selection rule instead of keeping all candidates & \rulegain \\
+Physical channels (fold~0) & $+0.008\ [-0.001,\,+0.017]$ \\
+FilNet instead of ImageNet ResNet-50 & \vsrfifty \\
+Head on FilNet's features instead of the rule & $-0.002\ [-0.005,\,+0.002]$ \\
 \midrule
-Neighbouring frames, diff.\ rotation (OOF) & $-0.002\ [-0.004,\,-0.000]$ \\
-Pixel random forest in the ensemble (ens.) & $-0.001\ [-0.007,\,+0.005]$ \\
+Neighbouring days given to the rule & $-0.002\ [-0.004,\,-0.000]$ \\
+Random forest added to the ensemble & $-0.001\ [-0.007,\,+0.005]$ \\
+FilNet added to the ensemble & $+0.006\ [-0.000,\,+0.013]$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=\columnwidth]{fig_morph.jpg}
-  \caption{Two validation photographs not seen by their fold model: the outlines of their three experts (green) and FilNet's filaments (orange).}
-  \label{fig:morph}
-\end{figure}
+\textbf{Selection rule.} If every candidate is kept, PQ is \ooffixed{}. The rule raises it to \oofpq{}.
 
-\textbf{Physical channels.} A control FilNet trained on fold~0 with brightness and position only, everything else identical, is lower with fixed rules (0.408 against 0.418) and with the rule (Table~\ref{tab:abl}); it was behind at four of the five checks during training.
+\textbf{Physical channels.} We trained a control FilNet on fold~0 with the brightness and the position only; everything else was identical. It is lower than FilNet both without the rule (0.408 against 0.418) and with it (0.430 against 0.438).
 
-\textbf{Pixel level.} Against the union of the experts, FilNet labels the pixels of the 141 validation photographs of fold~0 with precision 0.708, recall 0.699 and F1 0.704. One expert scored in the same way against the other experts reaches F1 0.651, so at the pixel level the model agrees with the experts better than they agree with each other.
+\textbf{Selection inside the network.} We also tested whether the network itself can decide which candidates to keep. FilNet's internal features are averaged inside each candidate, and a linear head predicts the same quantity as the rule. On the first three folds this head reaches PQ~0.449 and the rule 0.451, and adding the head's output to the rule does not change the result. The head and the rule read the same information, so we kept the rule.
+
+\textbf{Pixel level.} FilNet agrees with the union of the experts' outlines at a pixel-level F1 of 0.704 (fold~0). One expert agrees with the other experts at F1 0.651.
 
 \subsection{Strengths, weaknesses and possible improvements}
-The pipeline's strengths are that it is one model family with no pre-trained component, small enough to train in a few GPU hours, that its inputs have a direct physical meaning, and that every component was checked out of fold with intervals. Its limit is set by the annotations rather than by the network. For 17\% of the filaments a second expert drew nothing, and small filaments are the most disputed: the second expert misses 41\% of the filaments smaller than 500 pixels but 9\% of those larger than 2000 pixels. The outlines themselves are well placed (only 2 of 8177 are not darker than their surroundings), so the experts disagree about \emph{whether} a faint structure is a filament rather than about \emph{where} it is.
+\textbf{Strengths.} The pipeline uses one model family without any pre-trained component, a fold model is trained in a few GPU hours, and the inputs have a direct physical meaning.
 
-Table~\ref{tab:who} measures how much of this a model could still recover. On the 296 photographs with two or three experts we let different judges decide which candidates to keep, scoring each expert in turn. The decisions of the \emph{other} experts of the same photograph, i.e.\ a perfect simulator of other annotators, are no better than our rule, and adding them to the rule gains about 0.01. Only the scored expert's own decisions raise PQ to 0.55--0.61. The remaining error is therefore one annotator's personal choice, which cannot be read from the image. All our models, like the public solutions of other teams, also score 0.06--0.07 lower on the test set than on validation; the test set appears to be annotated more sparsely.
+\textbf{Weaknesses.} The limit is set by the annotations rather than by the network. For 17\% of the filaments drawn by one expert, a second expert drew nothing. Small filaments are disputed most: the second expert omits 41\% of the filaments smaller than 500 pixels, but only 9\% of those larger than 2000 pixels. The experts therefore disagree about whether a faint structure is a filament, not about where it lies.
 
-\begin{table}[t]
-\caption{Who decides which candidates are kept: PQ on 296 photographs with 2--3 experts (candidates of the ResNet-50 U-Net, out of fold), for one outline per candidate and for the outline chosen from a pool of 32.}
-\label{tab:who}
-\centering\small
-\begin{tabular}{@{}lcc@{}}
-\toprule
-Judge & One outline & Pool \\
-\midrule
-Our 21-feature rule & 0.446 & 0.446 \\
-The other experts of the photograph & 0.443 & 0.449 \\
-Rule and other experts together & 0.453 & 0.459 \\
-The scored expert (oracle) & 0.547 & 0.612 \\
-\bottomrule
-\end{tabular}
-\end{table}
+We measured how much a model could still gain. On the 296 photographs with two or three experts, we let different judges decide which candidates to keep and scored each expert in turn. With our rule as the judge, PQ is 0.446. With the decisions of the other experts of the same photograph it is 0.443, and with both together 0.453. Only the decisions of the scored expert raise it, to 0.547. A model that imitated the other annotators perfectly would thus gain about 0.01. The rest is the personal choice of one annotator, which cannot be read from the image. In addition, all our models score about 0.06 lower on the public test set than on validation.
 
-Improvements are therefore most likely to come from modelling individual annotators \cite{tanno2019learning}, which requires knowing who annotated each test photograph, and from a second observation of the same filament whenever one exists.
+\textbf{Possible improvements.} A model of the individual annotators \cite{tanno2019learning} could help, but it requires knowing who annotated each test photograph. A second observation of the same filament on a neighbouring day is the other possibility; it is discussed in Section~\ref{sec:other}.
 
 
 % ==================================== %
 %        OTHER APPROACHES (added)      %
 % ==================================== %
-\section{Other approaches and ideas}\label{sec:other}
+\section{What we tried and why we chose FilNet}\label{sec:other}
 
-\textbf{An ensemble of ImageNet-initialised models.} Before FilNet our best pipeline averaged the maps of ten full-frame U-Nets (ResNet-34 and ResNet-50 encoders $\times$ five folds, 60 and 45 epochs on whole frames) and of a segmenter built on the vision encoder of Qwen3-VL-2B \cite{qwen3vl2025}, pre-trained on 2000 unlabelled GONG frames; a YOLO11l-seg model \cite{yolo11} per fold added four agreement features to the rule. It reaches PQ~0.458 on fold~0 (nested) and 0.39 on the test set: D4 averaging added $+0.005$, the second encoder $+0.004$, the heliographic features of the rule $+0.005$, and the Qwen map with the YOLO11 features $+0.006$. Because FilNet alone reaches the same test score with one family and no pre-training, we submitted FilNet; adding it to this ensemble gains another $+0.006$ on fold~0 (Table~\ref{tab:abl}).
+\subsection{Per-pixel classification with tree models}
+Our first approach treats every pixel of the solar disk as one row of a table, and a classifier decides whether the pixel belongs to a filament. We used random forests \cite{breiman2001random} and gradient-boosted trees (XGBoost \cite{chen2016xgboost}). These models run on a CPU and are cheap to train, and every column of the table has a physical meaning, so the model can be inspected. The photographs were first augmented by changes of contrast, sharpness and brightness, and then split into pixels. We trained both classifiers (filament or not) and regressors of the fraction of experts who marked the pixel; they behaved alike.
 
-\textbf{A physically motivated per-pixel analysis.} Here each disk pixel is one row of a table, and a random forest \cite{breiman2001random} classifies it as filament or background. The table has 35 columns: the pixel's position on the Sun (heliographic latitude and longitude, $\mu$, the differential rotation rate at that latitude), the time and station of the observation ($B_0$, the phase of the solar cycle, the hour, the GONG station), its darkness (brightness relative to the quiet Sun at the same $\mu$, smoothed at several scales and compared with its surroundings), and the shape of the darkness (Hessian eigenvalues at three scales). Alone, this forest finds fewer than half of the filament pixels (recall 0.415, F1 0.543); with a U-Net probability as an additional column it ranks pixels best of all our models (area under the ROC curve 0.990), but its best F1 (0.711) only equals that of its U-Net input. Shuffling one group of columns at a time shows what the forest relies on: the darkness columns raise the log-loss by 0.154, the shape columns by 0.036, position, time and station together by 0.017. A filament is therefore recognised by its darkness against the quiet Sun and by its elongated shape, not by where or when it was observed; this is why FilNet receives the darkness as input channels. Further columns did not help: the station as binary columns, photometric copies and a target growing with the number of experts left the average precision (0.59) unchanged, and the contrast and position of every pixel within 12 pixels (1358 columns) did not raise it either (0.50--0.55 against 0.56 for a control forest on the same rows, for forests of two sizes and for XGBoost). A second forest that reads the first forest's predictions around the pixel (auto-context) raised it from 0.59 to 0.66: what helps is the neighbours' state, not their raw values. Columns for the Sun's rotation \cite{snodgrass1990rotation}, i.e.\ the contrast around the same solar point in other photographs up to 84 hours away, were almost never used, because only 3--9\% of the validation pixels have such a photograph. All forests stay well below the networks.
+The table has 35 columns in four groups: the position on the Sun (heliographic latitude and longitude, $\mu$, the differential rotation rate at that latitude); the time and the station (the $B_0$ angle, the phase of the solar cycle, the hour, the GONG station); the darkness (the brightness relative to the quiet Sun at the same $\mu$, smoothed at several scales and compared with the surroundings); and the shape (the eigenvalues of the Hessian at three scales, which respond to elongated dark structures).
 
-\textbf{Earlier networks and abandoned approaches.} A per-pixel network of twelve dilated convolutions with photograph-level quantities entering by feature-wise modulation \cite{perez2018film} reached PQ~0.38, and a compact full-frame U-Net with attention at $64\times64$ reached 0.37 with fixed rules (Table~\ref{tab:dev}); cross-attention to neighbouring frames with a learnable rotation law did not help it, nor did averaging de-rotated maps of neighbouring frames or giving them to the rule. Our first model predicted the mask, the spine and the half-width from 18 physical channels and scored 0.29 on the test set. Mask R-CNN with standard anchors did not train, because the anchors reach IoU~$\geq0.7$ with only a third of the filament boxes. Self-training lowered validation PQ, and pre-training on unlabelled GONG frames did not help the networks trained from scratch. A vision-language model (Qwen3-VL) shown each candidate on a crop learned only what the rule's features already describe.
+Alone, these models were not sufficient. The forest ranks the pixels well (area under the ROC curve 0.96), but its best pixel-level F1 is 0.55, against 0.71 for a U-Net. Each pixel is judged separately, and the filaments assembled from the forest's map reach only PQ~0.26. More columns did not change this. The contrast and the position of all pixels within a radius of 12 pixels (1358 columns) improved neither the forests nor XGBoost: the average precision was 0.50--0.55, against 0.56 for the 35 columns on the same rows. A second forest that reads the first forest's predictions around the pixel raised the average precision from 0.59 to 0.66, so the state of the neighbouring pixels is useful while their raw values are not. Columns that describe the same solar point on neighbouring days, found with the differential rotation law \cite{snodgrass1990rotation}, were almost never used, because only 3--9\% of the pixels have such an observation.
+
+The forest became useful only together with a U-Net. With the U-Net's probability as three additional columns it ranks the pixels better than any of our other models (area under the ROC curve 0.990). Its best F1 (0.711), however, equals that of the U-Net it reads, and the submission built in this way scored 0.37 on the public test set, against 0.38 for the U-Net alone.
+
+The main result of this analysis is the list of columns on which the forest relies. Shuffling one group of columns at a time raises the log-loss by 0.154 for the darkness, by 0.036 for the shape, and by 0.017 for the position, time and station together. A filament is therefore recognised by its darkness relative to the quiet Sun and by its elongated shape, not by where or when it was observed. This is why FilNet receives the contrast and the local darkness as input channels.
+
+\subsection{PixNet and attention over time}
+In parallel we built PixNet, a neural counterpart of the table. It classifies each pixel from its surroundings with twelve dilated convolutions, and the quantities that describe the whole photograph (time, station, $B_0$) modulate its features \cite{perez2018film}. With 6.2 million weights and no pre-training it reached PQ~0.38, clearly above the forests and below the U-Nets initialised from ImageNet. Its successor, a full-frame U-Net with attention at its coarsest level, reached 0.41. In this network we tested attention over time: the network also looked at the photographs of neighbouring days, at the positions given by a rotation law with learnable coefficients. This did not improve the result. Averaging the de-rotated maps of neighbouring photographs, or giving them to the selection rule, did not help either (Table~\ref{tab:abl}).
+
+\subsection{Ensembles}
+Our best result before FilNet was an ensemble of sixteen models: ten full-frame U-Nets with ResNet-34 and ResNet-50 encoders initialised from ImageNet (two encoders for each of the five folds), a segmenter built on the vision encoder of Qwen3-VL-2B \cite{qwen3vl2025}, and one YOLO11 model \cite{yolo11} per fold, whose agreement with each candidate was given to the selection rule. The ensemble reaches PQ~0.46 on validation and 0.39 on the public test set. It is computationally expensive, because sixteen models of four kinds have to be trained and applied to every photograph. FilNet reaches the same test score with one small model family and no pre-training, and its input follows directly from the per-pixel analysis. For these reasons we submitted FilNet.
+
+Several other attempts were less successful: a first model that predicted the mask, the spine and the half-width of the filaments from 18 physical channels (0.29 on the test set), Mask R-CNN, self-training, and a vision-language model asked to judge each candidate.
+
+\subsection{Ideas not yet realised}
+One idea remains largely untested. A filament lives for days or weeks. A structure seen today was probably present yesterday and will probably be present tomorrow, at the position given by the solar rotation. A second observation could therefore settle the doubtful cases, and these are the faint structures on which the experts disagree. Our tests of this idea (the rotation columns of the table, the attention over time and the de-rotated maps) gave no gain. However, only a small part of the competition photographs have another photograph of the same region within a few days, so the idea could not be tested properly. The GONG archive would provide such observations for every frame. More generally, physical knowledge enters FilNet only through its input channels, and we expect that a model which uses more of the physics of filaments would be more successful.
 
 
 % ==================================== %
