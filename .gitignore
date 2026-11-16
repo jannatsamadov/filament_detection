@@ -79,3 +79,13 @@ modeller.md
 # the earlier version of the report (the 16-model ensemble as the submitted pipeline), kept locally
 report/overleaf_ensemble_v1/
 report/report_ensemble_v1.pdf
+
+# internal notes and data folders (never public)
+/HANDOFF.md
+/IDEAS.md
+/MODEL_V5.md
+/ARCHITECTURE.md
+/gemini ansvers.md
+/gong_unlabelled/
+/labels_v5/
+/consensus_prop/
