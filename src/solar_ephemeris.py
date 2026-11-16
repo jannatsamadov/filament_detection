@@ -16,6 +16,14 @@ Physical Observations of the Sun"), which is good to about 0.01 deg -- far
 finer than the pixel scale here, where 1 px at disk centre is 0.063 deg of
 heliographic longitude.
 
+**The competition frames are already solar-north-up: pass P = 0 for them.**
+Measured 2026-11-09 by carrying the annotated filaments of 287 photograph pairs
+(7 h - 2 d apart) to the later frame's time and counting how many land within
+15 px of a filament drawn there: P applied 3.0%, P = 0 18.1% (no motion at all:
+0.6%). The same test found B0 entering with the wrong sign in the two pixel
+conversions below; fixed then. Both errors together are why the August label
+propagation (v3) put more than half of its filaments on no dark material.
+
 Observer position on Earth is ignored deliberately. The diurnal solar parallax
 is 8.79 arcsec against a solar radius of about 960 arcsec, so two GONG stations
 on opposite sides of the Earth see the disk centre shift by at most 0.9% of the
@@ -100,9 +108,11 @@ def pixel_to_heliographic(x, y, cx, cy, r, P, B0, L0):
     off = rho2 > 1.0
 
     b = B0 * DEG
-    # rotate about the x axis by B0 to reach heliographic frame
-    yh = yr * math.cos(b) - zr * math.sin(b)
-    zh = yr * math.sin(b) + zr * math.cos(b)
+    # rotate about the x axis by B0 to reach heliographic frame; the disk centre
+    # (yr 0, zr 1) must land on latitude +B0. Until 2026-11-09 both signs here were
+    # flipped, putting it at -B0 (see the module docstring)
+    yh = yr * math.cos(b) + zr * math.sin(b)
+    zh = -yr * math.sin(b) + zr * math.cos(b)
 
     lat = np.degrees(np.arcsin(np.clip(yh, -1.0, 1.0)))
     lon = np.degrees(np.arctan2(xr, zh)) + L0
@@ -126,8 +136,8 @@ def heliographic_to_pixel(lat, lon, cx, cy, r, P, B0, L0):
     yh = np.sin(la)
     zh = np.cos(la) * np.cos(dlon)
 
-    yr = yh * math.cos(b) + zh * math.sin(b)
-    zr = -yh * math.sin(b) + zh * math.cos(b)
+    yr = yh * math.cos(b) - zh * math.sin(b)
+    zr = yh * math.sin(b) + zh * math.cos(b)
     xr = xh
 
     p = P * DEG

@@ -1,25 +1,23 @@
-contourpy==1.3.3
-cycler==0.12.1
-filelock==3.32.3
-fonttools==4.63.0
-fsspec==2026.7.0
-Jinja2==3.1.6
-kiwisolver==1.5.0
-lightning-utilities==0.15.3
-MarkupSafe==3.0.3
-matplotlib==3.11.1
-mpmath==1.3.0
-networkx==3.6.1
-numpy==2.4.6
-packaging==26.3
-pillow==12.3.0
+# Python 3.13. Versions of the Kaggle image the kernels and notebooks/pipeline.ipynb ran on (pip freeze, 2026-11-15).
+# The GPU kernels used the CUDA 12.8 build of the same torch (2.11.0+cu128).
+torch==2.11.0
+torchvision==0.26.0
+numpy==2.1.3
+scipy==1.16.3
+scikit-learn==1.6.1
+pandas==2.3.3
+matplotlib==3.10.0
+opencv-python-headless==4.14.0.94
 pycocotools==2.0.11
-pyparsing==3.3.2
-python-dateutil==2.9.0.post0
-scipy==1.17.1
-six==1.17.0
-sympy==1.14.0
-torch==2.13.0+cu126
-torchmetrics==1.9.0
-torchvision==0.28.0+cu126
-typing_extensions==4.16.0
+pillow==13.0.0
+# the Qwen3-VL segmenter (kernels/aug_unet/qwen_seg.py); its kernels run `pip install -U "transformers>=4.57"`
+transformers==5.20.2
+huggingface_hub==1.33.0
+safetensors==0.8.0
+accelerate==1.15.0
+# YOLO11 (kernels/aug_unet/yolo_seg.py)
+ultralytics==8.4.210
+# running the notebook and downloading the kernels' outputs
+ipykernel==6.17.1
+nbconvert==6.4.5
+kaggle==2.0.2

@@ -1,88 +1,86 @@
 # Solar Filament Segmentation Challenge 2026
 
-Instance segmentation of solar filaments in GONG H-alpha full-disk images
-(2048x2048), for the [IEEE BigData Cup competition](https://www.kaggle.com/competitions/filament-segmentation-2026).
-Scored with Panoptic Quality.
+Instance segmentation of solar filaments in GONG H-alpha full-disk photographs (2048 × 2048).
 
-## Approach: spine-first, no boxes
+- Competition: [IEEE BigData Cup, Kaggle](https://www.kaggle.com/competitions/filament-segmentation-2026), scored by panoptic quality (PQ).
+- Team: J. Samadov, N. S. Dzhalilov, A. Habilov.
 
-A filament is a long, thin, curved ribbon — a median **8.2 px wide and 125 px
-long**, filling only **24%** of its own bounding box. Measured over 2665 ground
-truth boxes, only **33%** could reach IoU 0.7 with any default anchor of a
-Mask R-CNN FPN, so the region proposal network never received enough positive
-examples and every configuration we tried collapsed to predicting nothing.
+**Start with [`notebooks/filnet_pipeline.ipynb`](notebooks/filnet_pipeline.ipynb).** It walks through the submitted pipeline and builds the submitted file from the saved model outputs. The technical report is [`report/report.pdf`](report/report.pdf) (source in [`report/overleaf/`](report/overleaf/)).
 
-This solution drops boxes entirely. A U-Net predicts three maps at the native
-2048 resolution, and instances are assembled geometrically:
+## Result
+
+The submitted model is **FilNet**: one family of U-Nets trained from random initialisation (no ImageNet, no other pre-training), on a physically normalised input.
+
+| | weights | initialisation | validation PQ | public test PQ |
+|---|---|---|---|---|
+| **FilNet, three fold models + selection rule (submitted)** | 17.6 M each | from scratch | **0.451** (out of fold, 423 photographs) | **0.39** |
+| FilNet, five fold models + selection rule ([notebook](notebooks/filnet_pipeline.ipynb)) | 17.6 M each | from scratch | 0.444 (out of fold, 707 photographs) | 0.39 |
+| U-Net ResNet-50 + the same rule, the same photographs | 32.5 M | ImageNet | 0.452 | 0.38 |
+| ensemble of 16 ImageNet-initialised models ([`notebooks/pipeline.ipynb`](notebooks/pipeline.ipynb)) | – | ImageNet | 0.458 (fold 0, nested) | 0.39 |
+
+- One expert scored against the other experts reaches PQ 0.35 on the same photographs.
+- If the selection rule is replaced by what the *other* experts of the same photograph did with each candidate, PQ does not rise (0.443–0.449 against 0.446); only the scored expert's own choices raise it. What remains is one annotator's personal choice (report, Section 3.3).
+
+## Pipeline
 
 ```
-image ──▶ U-Net ──┬──▶ semantic   (filament / background)
-                  ├──▶ spine      (Gaussian ridge along the centreline)
-                  └──▶ radius     (distance to the mask boundary)
-
-spine ──▶ threshold ──▶ connected components ──▶ smoothing spline
-      ──▶ sweep a disk of the predicted radius ──▶ ∩ semantic ──▶ instance
+GONG Hα 2048²
+   │  fixed arithmetic, no weights
+   ▼
+7 channels: brightness · contrast against the quiet Sun at the same μ · darkness against the
+            surroundings at ~30 px and ~130 px · sin(latitude) · longitude from the central meridian · μ
+   │
+   ▼
+FilNet × folds: residual U-Net, 6 resolutions (1 … 1/32), widths 24–384, 17.6 M weights, from scratch
+   │  whole frame, averaged over the 8 symmetries of the square (D4); fold models averaged
+   ▼
+mean map ──▶ candidates: threshold 0.6, pieces within 3 px joined, area ≥ 100 px
+   │
+   ▼
+selection rule: gradient-boosted trees on 21 features (appearance, heliographic latitude and longitude,
+                axis orientation) predict each candidate's IoU with the experts; cut 0.24
+   │
+   ▼
+masks → COCO RLE
 ```
 
-Each instance is a swept curve, so it is a single connected region by
-construction — the fragmentation that Panoptic Quality punishes hardest cannot
-occur, and there is no NMS. Separation comes from the spines themselves: only
-**0.9%** of spines come within 10 px of another filament's spine, against 2.8%
-of the masks.
+1. **Input channels** ([`filnet.py`](kernels/aug_unet/filnet.py), `front`). A filament is darker than the quiet Sun around it, not dark in absolute terms. The quiet-Sun brightness as a function of μ is measured on each frame (twice, the second time without filaments, spots and plage) and divided out; the local darkness is that contrast minus its mean over the surroundings.
+2. **FilNet** ([`filnet.py`](kernels/aug_unet/filnet.py)).
+   - Trained on 512 px windows, every other one centred on a filament, 12 per step; 3–4 hours per fold on one T4.
+   - Target: the fraction of experts who drew each pixel. Loss: BCE (positive weight 10) plus Tversky, at three resolutions.
+   - Augmentation: rotation by any angle about the disk centre, mirrors, and photometric changes within the ranges measured between GONG frames; the channels are computed after it.
+   - The model is the moving average of the weights. Inference: the whole frame, D4.
+3. **Candidates and selection rule** ([`candidate_pool.py`](kernels/aug_unet/candidate_pool.py), [`kfold.py`](kernels/aug_unet/kfold.py)). The rule is trained on out-of-fold candidates: every photograph's candidates come from the fold model that never saw it.
 
-Sweeping the *annotated* spine with its true half-width reconstructs the
-annotated mask at **median IoU 0.758**, which bounds what the representation can
-achieve. Feeding the assembly its own ground-truth maps scores **PQ 0.734**.
+Every number above is out of fold, with bootstrap intervals over photographs (see the report).
 
-## Preprocessing
+## Repository
 
-The images arrive geometrically registered (disk centre 1024,1024 ± 0.5 px,
-radius 904 ± 0.8 px) but *not* photometrically: the depth of limb darkening
-varies from 0.72 to 0.85 between frames, which is atmospheric rather than solar.
-Dividing out each frame's own quiet-sun radial profile (75th percentile per
-radial bin, so filaments do not drag it down) **doubles filament contrast**
-(0.67σ → 1.33σ) and more than halves the confusion with quiet chromosphere
-(27.9% → 11.4%).
-
-Note the limb must be located by the steepest radial brightness drop, not by
-thresholding: a scattered-light halo surrounds the disk out to about 1.15 R☉ and
-a naive fit reads the radius 13% too large.
-
-## Layout
-
-| Path | Purpose |
+| Path | What it is |
 |---|---|
-| `src/geometry.py` | solar limb detection (fit residual ~2 px) |
-| `src/photometry.py` | limb-darkening flattening |
-| `src/preprocess.py` | one-off flattening of all frames |
-| `src/precompute_targets.py` | one-off rasterisation of the three targets |
-| `src/spine_data.py` | patch dataset, split grouped by photograph |
-| `src/spine_model.py` | U-Net with ResNet encoder, three heads |
-| `src/spine_train.py` | training, full-frame PQ validation |
-| `src/spine_infer.py` | instance assembly (spine → spline → sweep) |
-| `src/spine_calibrate.py` | threshold sweep on cached predictions |
-| `src/spine_predict.py` | test set → RLE → submission CSV |
-| `src/verify_submission.py` | eight checks before an upload is spent |
-| `src/metrics.py` | Panoptic Quality |
-| `src/thermal.py` | GPU duty-cycling for a laptop with a dead fan |
-| `src/check_*.py` | the measurements the design decisions rest on |
+| `notebooks/filnet_pipeline.ipynb` | the submitted pipeline, executed, building the submitted CSV |
+| `notebooks/pipeline.ipynb` | the 16-model ImageNet ensemble (same public score), executed, rebuilding its CSV |
+| `kernels/aug_unet/filnet.py` | FilNet: input channels, network, training loop |
+| `kernels/aug_unet/filnet_*.py`, `panel_oracle.py` | the measurements quoted in the report (the rule out of fold, the control without physical channels, outline settings, a keep head on the network's own features, other experts as judges) |
+| `kernels/aug_unet/` (rest) | the ensemble's code. Each Kaggle kernel is generated from this folder by `kernels/build.py` |
+| `kernels/<name>/kernel-metadata.json` | the Kaggle kernels that trained the models and wrote their probability maps (`filament-filnet`, `-filnet-b`, `-filnet-c` for FilNet) |
+| `kernels/aug_unet/pixel_*.py`, `pixnet.py` | the physical per-pixel analysis: a table of position, time, station, contrast against the quiet Sun, neighbours and differential rotation, with random forests and a per-pixel network (report, Section 4) |
+| `report/` | the technical report (ACM template) and its figure scripts |
+| `src/verify_submission.py` | checks a CSV the way the scorer decodes it, before an upload |
+| `src/` (rest) | the earlier spine/half-width approach and the measurements the design rests on |
 
 ## Reproducing
 
 ```bash
-python -m venv .venv && ./.venv/Scripts/python -m pip install -r requirements.txt
-# place the Kaggle data in MAGFiLO_1.0_Kaggle_2026/
-python src/preprocess.py train test
-python src/precompute_targets.py
-python src/spine_train.py --epochs 20
-python src/spine_calibrate.py
-python src/spine_predict.py --out submission.csv
-python src/verify_submission.py submission.csv --test-dir MAGFiLO_1.0_Kaggle_2026/test/test_images
+pip install -r requirements.txt
+kaggle competitions download -c filament-segmentation-2026   # unzip into MAGFiLO_1.0_Kaggle_2026/
+jupyter nbconvert --to notebook --execute notebooks/filnet_pipeline.ipynb
 ```
+
+- The notebook downloads the fold models' probability maps from the public Kaggle kernels with the Kaggle CLI, so no GPU is needed. It takes about half an hour on 4 CPU cores.
+- Both FilNet files were submitted and both score 0.39 on the public test set. The executed notebook in this repository was run on Kaggle and builds the five-model file (`submission_filnet5_rule21.csv`, MD5 `f6e98d5ca4376d94364d5ea64ef96162`). The three-model file described in the report was built from the first three fold models with the same code (`kernels/aug_unet/filnet_folds.py`, scikit-learn 1.9.1); on Kaggle (scikit-learn 1.6.1) the rule chooses a slightly different cut, so the files are not identical byte for byte.
+- To retrain a fold, run `python kernels/build.py`, then `kaggle kernels push -p kernels/filnet` (fold 0), `kernels/filnet_b` (folds 1–2) or `kernels/filnet_c` (folds 3–4). Each kernel trains two models side by side on Kaggle's two T4 GPUs.
 
 ## Acknowledgment
 
-This work utilizes GONG data obtained by the NSO Integrated Synoptic Program,
-managed by the National Solar Observatory, operated by AURA under a cooperative
-agreement with the National Science Foundation and with contribution from NOAA.
-Ground truth is MAGFiLO (doi:10.1038/s41597-024-03876-y).
+This work utilizes GONG data obtained by the NSO Integrated Synoptic Program, managed by the National Solar Observatory, operated by AURA under a cooperative agreement with the National Science Foundation and with contribution from NOAA. Ground truth is MAGFiLO (doi:10.1038/s41597-024-03876-y).

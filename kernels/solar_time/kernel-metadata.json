@@ -1,0 +1,21 @@
+{
+  "id": "jannatsamadov/filament-solar-time",
+  "title": "filament solar time",
+  "code_file": "run.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": "true",
+  "enable_gpu": "true",
+  "enable_tpu": "false",
+  "enable_internet": "true",
+  "dataset_sources": [
+    "jannatsamadov/filament-gong-unlabelled"
+  ],
+  "competition_sources": [
+    "filament-segmentation-2026"
+  ],
+  "kernel_sources": [
+    "jannatsamadov/filament-solar-unet"
+  ],
+  "model_sources": []
+}

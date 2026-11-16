@@ -173,7 +173,8 @@ def validate(model, val_stems, by_id, fname, device, gov, ondisk,
 
     model.eval()
     per_thresh = {t: [] for t in thresholds}
-    query_res, query_conf = [], []
+    query_thresh = (0.3, 0.5, 0.7, 0.85)
+    query_res = {t: [] for t in query_thresh}
     for k in range(len(ds)):
         item = ds[k]
         planes = item["planes"][None]
@@ -189,18 +190,25 @@ def validate(model, val_stems, by_id, fname, device, gov, ondisk,
             for g in gts:
                 per_thresh[t].append(pq_from_masks(g, preds))
         if q is not None:
-            masks, conf = instances_from_queries(
-                q["score"][0].float(), q["masks"][0].float(), sem, sem.shape)
-            for g in gts:
-                query_res.append(pq_from_masks(g, masks))
-            query_conf.append(len(masks))
+            for qt in query_thresh:
+                masks, _ = instances_from_queries(
+                    q["score"][0].float(), q["masks"][0].float(), sem, sem.shape,
+                    score_thresh=qt)
+                for g in gts:
+                    query_res[qt].append(pq_from_masks(g, masks))
     model.train()
     best_t, best = None, None
     for t in thresholds:
         a = aggregate(per_thresh[t])
         if best is None or a["PQ"] > best["PQ"]:
             best_t, best = t, a
-    qa = aggregate(query_res) if query_res else None
+    qa = None
+    for qt in query_res:
+        if not query_res[qt]:
+            continue
+        r = dict(aggregate(query_res[qt])); r["thresh"] = qt
+        if qa is None or r["PQ"] > qa["PQ"]:
+            qa = r
     return best_t, best, qa
 
 
@@ -279,7 +287,9 @@ def main():
         print(f"init from {Path(args.init_from).name}: {loaded} tensors, {skipped} skipped")
 
     crit = SpineLoss(w_chirality=args.w_chirality).to(device)
-    qcrit = QueryLoss().to(device) if args.n_queries else None
+    # w_query 0 keeps the head in the graph -- so a checkpoint that has it still
+    # loads, and the optimizer state still lines up -- while its loss is skipped
+    qcrit = QueryLoss().to(device) if (args.n_queries and args.w_query > 0) else None
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     scaler = torch.amp.GradScaler("cuda")
     steps = args.epochs * len(train_stems)
@@ -398,8 +408,9 @@ def main():
                 a = dict(a); a.update(epoch=epoch + 1, thresh=thr, phase=phase)
                 if qa:
                     a["query"] = dict(qa)
-                    print(f"  query head: PQ={qa['PQ']:.4f} TP={qa['TP']} "
-                          f"FP={qa['FP']} FN={qa['FN']}", flush=True)
+                    print(f"  query head (thresh {qa['thresh']}): "
+                          f"PQ={qa['PQ']:.4f} TP={qa['TP']} FP={qa['FP']} "
+                          f"FN={qa['FN']}", flush=True)
                 history.append(a); json.dump(history, open(vlog, "w"), indent=1)
                 print(f"VAL e{epoch+1} ({time.time()-t0:.0f}s, thresh {thr}): "
                       f"PQ={a['PQ']:.4f} SQ={a['SQ']:.4f} RQ={a['RQ']:.4f} "
