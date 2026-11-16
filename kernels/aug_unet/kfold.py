@@ -370,11 +370,12 @@ def transfer(frames, folds, ens0, cols):
                 rule_trained_on_ens0_itself=summary(rule_oof(ens0, f0, cols).sum(axis=0))), nested_cut
 
 
-def write_csv(d, variant, test_files, out, model=None, cut=None, cols=ALL_COLS, yolo=None):
+def write_csv(d, variant, test_files, out, model=None, cut=None, cols=ALL_COLS, yolo=None, filv=None):
     """Test CSV for a map; with a rule, its setting; without one, the ensemble's tuned point.
 
     With yolo ({fold: predictions}), the rule scores each candidate once per YOLO fold
-    model and keeps the mean, as the ten U-Nets' maps are averaged."""
+    model and keeps the mean, as the ten U-Nets' maps are averaged. filv(stem) gives the
+    FilNet fold models' votes on a test photograph; each YOLO fold is paired with one."""
     te_dir = run.find_data()[2]
     rows, per = [], []
     stems = [Path(n).stem for n in test_files]
@@ -400,8 +401,10 @@ def write_csv(d, variant, test_files, out, model=None, cut=None, cols=ALL_COLS, 
                 k_rows = k
             if k and yolo:
                 rl = [C.cand_rle(cands[n]) for n in k]
-                s = np.mean([model.predict(np.concatenate([X[k_rows], yolo_cols(rl, pr.get(("test", stem), []))], 1)[:, cols])
-                             for pr in yolo.values()], axis=0)
+                fv = [yolo_cols(rl, v) for v in filv(stem)] if filv else None      # one per FilNet fold model
+                s = np.mean([model.predict(np.concatenate([X[k_rows], yolo_cols(rl, pr.get(("test", stem), []))]
+                                                          + ([fv[i % len(fv)]] if fv else []), 1)[:, cols])
+                             for i, pr in enumerate(yolo.values())], axis=0)
             elif k:
                 s = model.predict(X[k_rows][:, cols])
             if k:
@@ -634,6 +637,148 @@ def kfold_yolo(src, d, out, procs, ysrc, smoke=False):
     json.dump(res, open(out / "kfold_yolo.json", "w"), indent=1, default=float)
     print(json.dumps(res, indent=1, default=float), flush=True)
     return res
+
+
+# ---- 11-16: FilNet (aug_unet/filnet.py: a U-Net trained from nothing, no ImageNet) in the 0.39 file's
+# pipeline, two ways: as a third member of every fold's map, and as "votes" -- its own filaments beside each
+# candidate, the way YOLO's are. Kernels filament-filnet (fold 0, and its `raw` arm), -b (folds 1-2), -c (3-4).
+FIL = ("filnet_phys", "filnet_phys_f1", "filnet_phys_f2", "filnet_phys_f3", "filnet_phys_f4")
+FIL_RAW = "filnet_raw"
+FILV_COLS = [28, 29, 30, 31]                  # as YOLO_COLS, against FilNet's own filaments
+KFF_SMOKE = False                             # kernels/build.py sets this in kfold_fil_smoke/run.py
+KFF_CSV = ("qfil", "qv", "qfilv")             # the variants whose test CSV is written
+
+
+def fil_votes(d, model, split, stem):
+    """One FilNet's own filaments on a photograph (the one setting), as YOLO's are kept: [(mean probability, rle)]."""
+    p = P.load_map(d, f"{model}/{VIEW}", split, stem)
+    lab, area = run.components(p, *C.ONE_SETTING)
+    out = []
+    for j in range(1, len(area)):
+        if area[j] >= C.POOL_MIN_AREA:
+            m = lab == j
+            out.append((float(p[m].mean()) / 255.0, run.mu.encode(np.asfortranarray(m.astype(np.uint8)))))
+    return out
+
+
+def add_votes(frames, votes):
+    """Append the four FilNet columns; votes[n] is None where that fold has no FilNet (the rule reads NaN)."""
+    for f, v in zip(frames, votes):
+        cols = yolo_cols(f["rle"], v) if v is not None else np.full((len(f["X"]), 4), np.nan, np.float32)
+        f["X"] = np.concatenate([f["X"], cols], 1)
+    return frames
+
+
+def kfold_fil(src, d, out, procs, ysrc, smoke=False):
+    """The 0.39 file's pipeline with FilNet added, each way and both.
+      rows   each fold's two U-Nets (pair), or the two plus that fold's FilNet (triple); 25 columns, or 29 with
+             the FilNet votes
+      check  out of fold on all photographs, the rule fitted and cut as in the 0.39 file, against pair/25 by
+             bootstrap; and fold 0's ensemble (5 U-Nets + Qwen, with or without fold 0's FilNets), nested cut
+      test   the ten U-Nets (+ every FilNet) + Qwen, the rule fitted on all rows; written and verified
+    A fold whose FilNet is not attached keeps its pair and has no votes."""
+    d, out = Path(d), Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    models = extract(src, d)
+    print("models:", models, flush=True)
+    have = [m in models for m in FIL]
+    print("FilNet folds attached:", [n for n in range(5) if have[n]], flush=True)
+    assert have[0], "fold 0's FilNet is needed for the fold-0 check"
+    yolo = load_yolo(ysrc)
+    if smoke:
+        yolo = {f: yolo.get(f, {}) for f in range(5)}
+    assert sorted(yolo) == [0, 1, 2, 3, 4], "every fold needs its own YOLO"
+    truth = fold_truth(smoke)
+    pool = mp.Pool(procs) if procs > 1 else None
+    imap = pool.imap if pool else map
+    folds = np.concatenate([[n] * len(t["frames"]) for n, t in enumerate(truth)])
+    view = VIEW
+
+    def frames_of(variants, tag):
+        cache = d / f"kfold_pool_rle_{tag}_{view}"
+        cache.mkdir(parents=True, exist_ok=True)
+        fr = one_setting(list(imap(pool_job, [(str(d), variants[n], stem, t["cache"], f, sets, str(cache), True)
+                                              for n, t in enumerate(truth) for f, stem, sets in t["frames"]])))
+        fr = add_neighbours(fr, d, [variants[g] for g in folds], "val", folds, imap)
+        return add_yolo(fr, [yolo[g] for g in folds], "val")
+
+    pair = [f"{PAIR[n]}/{view}" for n in range(5)]
+    triple = [f"{PAIR[n]}+{FIL[n]}/{view}" if have[n] else pair[n] for n in range(5)]
+    fr = {"pair": frames_of(pair, "pair")}
+    print("pair rows ready", flush=True)
+    fr["triple"] = frames_of(triple, "triple")
+    votes = [fil_votes(d, FIL[g], "val", f["stem"]) if have[g] else None for f, g in zip(fr["pair"], folds)]
+    for k in fr:
+        add_votes(fr[k], votes)
+    print("triple rows and votes ready", flush=True)
+    COLS = {"25": GEO_YOLO_COLS, "29": GEO_YOLO_COLS + FILV_COLS}
+    oof = {f"{k}/{c}": rule_oof(fr[k], folds, COLS[c]) for k in fr for c in COLS}
+    on = np.array([have[g] for g in folds])
+    res = dict(photographs=len(folds), filnet_folds=[n for n in range(5) if have[n]],
+               oof={k: summary(v.sum(axis=0)) for k, v in oof.items()},
+               oof_minus_pair25={k: boot(v, oof["pair/25"]) for k, v in oof.items() if k != "pair/25"},
+               oof_on_filnet_folds={k: summary(v[on].sum(axis=0)) for k, v in oof.items()},
+               oof_on_filnet_folds_minus_pair25={k: boot(v[on], oof["pair/25"][on]) for k, v in oof.items() if k != "pair/25"},
+               files={})
+    print(json.dumps(res, indent=1, default=float), flush=True)
+    json.dump(res, open(out / "kfold_fil.json", "w"), indent=1, default=float)
+    t0 = truth[0]
+    stems0 = [s for _, s, _ in t0["frames"]]
+    test_files = t0["meta"]["test_files"]
+    test_stems = [Path(n).stem for n in test_files]
+    raw = [FIL_RAW] if FIL_RAW in models else []
+    fil_all = [FIL[n] for n in range(5) if have[n]]
+    extra0 = {"pair": [], "triple": [FIL[0]] + raw}
+    extra_test = {"pair": [], "triple": fil_all + raw}
+    e0, mix_test = {}, {}
+    for key in ("pair", "triple"):
+        m0 = ENS0.split("+") + extra0[key]
+        mixed = mix_dump(d, f"{key}mix0", m0, (QSEG,), QSEG_W * len(m0) / 5.0, "val", stems0)
+        c0 = d / f"kfold_pool_rle_{key}mix0_{view}"
+        c0.mkdir(parents=True, exist_ok=True)
+        e = one_setting(list(imap(pool_job, [(str(d), mixed, stem, t0["cache"], f, sets, str(c0), True)
+                                             for f, stem, sets in t0["frames"]])))
+        e = add_neighbours(e, d, [mixed] * len(e), "val", np.zeros(len(e), int), imap)
+        e = add_yolo(e, [yolo[0]] * len(e), "val")
+        e0[key] = add_votes(e, [fil_votes(d, FIL[0], "val", f["stem"]) for f in e])
+    tv = {}
+
+    def test_votes(stem):
+        if stem not in tv:
+            tv[stem] = [fil_votes(d, m, "test", stem) for m in fil_all]
+        return tv[stem]
+
+    base = None
+    for tag, key, c in (("q", "pair", "25"), ("qfil", "triple", "25"), ("qv", "pair", "29"), ("qfilv", "triple", "29")):
+        res[tag], n25 = transfer(fr[key], folds, e0[key], COLS[c])
+        if base is None:
+            base = n25
+        else:
+            res[f"{tag}_minus_q"] = boot(n25, base)
+        print(tag, res[tag], {k: v for k, v in res.items() if k == f"{tag}_minus_q"}, flush=True)
+        json.dump(res, open(out / "kfold_fil.json", "w"), indent=1, default=float)
+    for tag, key, c in (("qfil", "triple", "25"), ("qv", "pair", "29"), ("qfilv", "triple", "29")):
+        if tag not in KFF_CSV:
+            continue
+        if key not in mix_test:
+            members = list(FAMILIES["r50"] + FAMILIES["r34"]) + extra_test[key]
+            mix_test[key] = (mix_dump(d, f"{key}mixtest", members, (QSEG,), QSEG_W * len(members) / 5.0, "test",
+                                      test_stems), len(members))
+        mix, n_mem = mix_test[key]
+        final = fit(fr[key], np.arange(len(folds)), COLS[c])
+        name = f"submission_kf{n_mem}{tag}_rule_geo_yolo.csv"
+        res["files"][tag] = write_csv(d, mix, test_files, out / name, final, res[tag]["on_ens0_best_cut"]["cut"],
+                                      COLS[c], yolo=yolo, filv=test_votes if c == "29" else None)
+        res["files"][tag]["verify"] = verify(out / name)
+        json.dump(res, open(out / "kfold_fil.json", "w"), indent=1, default=float)
+    print(json.dumps(res, indent=1, default=float), flush=True)
+    return res
+
+
+def kaggle_kfold_fil():
+    """filament-kfold-fil: filament-kfold-q2's inputs plus the three FilNet kernels' dumps."""
+    kfold_fil(Path("/kaggle/input"), Path("/tmp/fil_post"), run.WORK, run.os.cpu_count() or 4, Path("/kaggle/input"),
+              smoke=KFF_SMOKE)
 
 
 def kaggle_kfold():

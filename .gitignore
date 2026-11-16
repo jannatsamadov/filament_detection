@@ -75,3 +75,7 @@ private_tools/
 # local tools (LaTeX compiler)
 .tools/
 modeller.md
+
+# the earlier version of the report (the 16-model ensemble as the submitted pipeline), kept locally
+report/overleaf_ensemble_v1/
+report/report_ensemble_v1.pdf

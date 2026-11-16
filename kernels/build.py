@@ -91,6 +91,21 @@ def main():
     assert kfold_q2 != kfold
     (HERE / "kfold_q2").mkdir(exist_ok=True)
     (HERE / "kfold_q2" / "run.py").write_text(kfold_q2, encoding="utf-8")
+    # FilNet as a third member of every fold's map (11-16); the smoke build checks the plumbing on a few photographs
+    kfold_fil = kfold.replace('if __name__ == "__main__":\n    kaggle_kfold()\n',
+                              'if __name__ == "__main__":\n    kaggle_kfold_fil()\n')
+    assert kfold_fil != kfold
+    (HERE / "kfold_fil").mkdir(exist_ok=True)
+    (HERE / "kfold_fil" / "run.py").write_text(kfold_fil, encoding="utf-8")
+    kfold_fil_smoke = with_const(kfold_fil, "KFF_SMOKE = False                             "
+                                 "# kernels/build.py sets this in kfold_fil_smoke/run.py", "KFF_SMOKE = True")
+    (HERE / "kfold_fil_smoke").mkdir(exist_ok=True)
+    (HERE / "kfold_fil_smoke" / "run.py").write_text(kfold_fil_smoke, encoding="utf-8")
+    # the same without the test CSVs: the comparisons only, while folds 3-4 are still training
+    kfold_fil_eval = with_const(kfold_fil, 'KFF_CSV = ("qfil", "qv", "qfilv")             # the variants whose test CSV is written',
+                                "KFF_CSV = ()")
+    (HERE / "kfold_fil_eval").mkdir(exist_ok=True)
+    (HERE / "kfold_fil_eval" / "run.py").write_text(kfold_fil_eval, encoding="utf-8")
     # 11-15 (user: the join was never finely measured): the submitted map and rule with outlines joined up to
     # 14 px instead of 6, the fold-0 join sweep's best (fixed rules 0.4177 -> 0.4215; with the selector on held-out
     # halves 0.4381 -> 0.4437), at threshold 0.7 and 0.6; on all 707 photographs
@@ -207,6 +222,25 @@ def main():
     assert "solar_time.py" in stime
     (HERE / "solar_time").mkdir(exist_ok=True)
     (HERE / "solar_time" / "run.py").write_text(stime, encoding="utf-8")
+    # FilNet: a from-scratch network of Claude's own design (aug_unet/filnet.py, 11-16): one arm per T4
+    fmods = {n: (HERE / "aug_unet" / n).read_text(encoding="utf-8") for n in ("run.py", "qwen_seg.py", "filnet.py")}
+    filnet = launcher("filament-filnet", "filnet", pip="").replace("SRC = " + repr(mods), "SRC = " + repr(fmods))
+    assert "filnet.py" in filnet
+    (HERE / "filnet").mkdir(exist_ok=True)
+    (HERE / "filnet" / "run.py").write_text(filnet, encoding="utf-8")
+    # folds 1 and 2 of its `phys` arm, one per T4, in a session of their own (11-16)
+    filnet_b = launcher("filament-filnet-b", "filnet", pip="", env='os.environ["FIL_FILNET_FOLDS"] = "1;2"\n'
+                        'os.environ["FIL_FILNET_ARMS"] = "phys"\nos.environ["FIL_FILNET_BUDGET"] = "3.9"\n'
+                        ).replace("SRC = " + repr(mods), "SRC = " + repr(fmods))
+    assert "FIL_FILNET_FOLDS" in filnet_b and "filnet.py" in filnet_b
+    (HERE / "filnet_b").mkdir(exist_ok=True)
+    (HERE / "filnet_b" / "run.py").write_text(filnet_b, encoding="utf-8")
+    # folds 3 and 4, the last of the week's GPU quota (11-16)
+    filnet_c = filnet_b.replace('os.environ["FIL_FILNET_FOLDS"] = "1;2"', 'os.environ["FIL_FILNET_FOLDS"] = "3;4"').replace(
+        'os.environ["FIL_FILNET_BUDGET"] = "3.9"', 'os.environ["FIL_FILNET_BUDGET"] = "2.9"').replace("filament-filnet-b", "filament-filnet-c")
+    assert '"3;4"' in filnet_c and '"2.9"' in filnet_c
+    (HERE / "filnet_c").mkdir(exist_ok=True)
+    (HERE / "filnet_c" / "run.py").write_text(filnet_c, encoding="utf-8")
     for name, text in (("qwen_ft", qwen), ("qwen_geo", qgeo), ("yolo", yolo), ("yolo_b", yolo_b), ("qwen_seg", qseg),
                        ("qwen_seg2", qseg2), ("solar_unet", sunet),
                        ("pixnet", pixnet), ("pixnet_rot", pixnet_rot), ("pixnet_rot_smoke", pixnet_rot_smoke)):
